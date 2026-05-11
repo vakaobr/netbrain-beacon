@@ -32,13 +32,13 @@ linters:
           msg: 'M-4: use crypto/rand for any value that must be unpredictable'
         - pattern: '^math/rand/v2\.'
           msg: 'M-4: use crypto/rand for any value that must be unpredictable'
-        # M-9 / ADR-081: every device-IP dial must go through internal/safe_dial
+        # M-9 / ADR-081: every device-IP dial must go through internal/safedial
         - pattern: '^net\.Dial$'
-          msg: 'M-9: route device-IP dials through internal/safe_dial (ADR-081)'
+          msg: 'M-9: route device-IP dials through internal/safedial (ADR-081)'
         - pattern: '^net\.DialContext$'
-          msg: 'M-9: route device-IP dials through internal/safe_dial (ADR-081)'
+          msg: 'M-9: route device-IP dials through internal/safedial (ADR-081)'
         - pattern: '^net\.DialTimeout$'
-          msg: 'M-9: route device-IP dials through internal/safe_dial (ADR-081)'
+          msg: 'M-9: route device-IP dials through internal/safedial (ADR-081)'
         # M-6: never load full plaintext before size check
         - pattern: '^io\.ReadAll$'
           msg: 'M-6: use internal/crypto.GunzipCapped (or other bounded reader) for untrusted input — never io.ReadAll on a decompressed stream (ADR-080)'
@@ -78,8 +78,8 @@ linters:
 
   exclusions:
     rules:
-      # safe_dial IS the chokepoint — net.Dial* is expected here.
-      - path: internal/safe_dial/
+      # safedial IS the chokepoint — net.Dial* is expected here.
+      - path: internal/safedial/
         linters:
           - forbidigo
       # transport package calls the platform URL (not user-supplied) — net.Dial is allowed but reviewed.
