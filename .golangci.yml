@@ -1,0 +1,108 @@
+version: "2"
+
+run:
+  timeout: 5m
+  build-tags:
+    - integration
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - gosec
+    - bodyclose
+    - forbidigo
+    - staticcheck
+    - gocritic
+    - revive
+    - govet
+    - ineffassign
+    - unused
+    - misspell
+    - unconvert
+    - prealloc
+
+  settings:
+    forbidigo:
+      # ADR-077 + ADR-081 lint gates. Each pattern names a security-critical mandate
+      # that must be enforced at CI time, not relied on at review time.
+      forbid:
+        # M-4: math/rand has no place in cryptographic IV / key / nonce generation
+        - pattern: '^math/rand\.'
+          msg: 'M-4: use crypto/rand for any value that must be unpredictable'
+        - pattern: '^math/rand/v2\.'
+          msg: 'M-4: use crypto/rand for any value that must be unpredictable'
+        # M-9 / ADR-081: every device-IP dial must go through internal/safe_dial
+        - pattern: '^net\.Dial$'
+          msg: 'M-9: route device-IP dials through internal/safe_dial (ADR-081)'
+        - pattern: '^net\.DialContext$'
+          msg: 'M-9: route device-IP dials through internal/safe_dial (ADR-081)'
+        - pattern: '^net\.DialTimeout$'
+          msg: 'M-9: route device-IP dials through internal/safe_dial (ADR-081)'
+        # M-6: never load full plaintext before size check
+        - pattern: '^io\.ReadAll$'
+          msg: 'M-6: use internal/crypto.GunzipCapped (or other bounded reader) for untrusted input — never io.ReadAll on a decompressed stream (ADR-080)'
+
+      analyze-types: true
+
+      # Carve-outs for packages that legitimately implement the chokepoint.
+      # Anyone else hitting these patterns must justify in code review.
+      exclude-godoc-examples: true
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+
+    revive:
+      severity: warning
+      rules:
+        - name: exported
+          arguments: [checkPrivateReceivers]
+        - name: package-comments
+        - name: error-strings
+        - name: error-return
+        - name: error-naming
+        - name: var-naming
+        - name: receiver-naming
+        - name: indent-error-flow
+        - name: range
+        - name: unreachable-code
+
+    gosec:
+      excludes:
+        - G115 # integer overflow conversion — too noisy; relies on context
+
+    staticcheck:
+      checks: ["all"]
+
+  exclusions:
+    rules:
+      # safe_dial IS the chokepoint — net.Dial* is expected here.
+      - path: internal/safe_dial/
+        linters:
+          - forbidigo
+      # transport package calls the platform URL (not user-supplied) — net.Dial is allowed but reviewed.
+      - path: internal/transport/
+        linters:
+          - forbidigo
+        text: 'net\.Dial'
+      # io.ReadAll is fine for fixed-size response bodies inside the generated client.
+      - path: internal/api/
+        linters:
+          - forbidigo
+      # io.ReadAll allowed in tests where the input size is controlled by the test author.
+      - path: '_test\.go'
+        linters:
+          - forbidigo
+          - errcheck
+          - gosec
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0

@@ -1,0 +1,152 @@
+# Status: add-beacon-service
+
+**Risk:** High | **Updated:** 2026-05-10
+**Stack:** Go 1.26.3 (latest stable) / Docker (planned) / GitHub Actions (planned) — greenfield repo
+
+## Progress
+
+- [x] Discovery - Completed (2026-05-10): 01_DISCOVERY.md written; locked contract inputs catalogued (OpenAPI 1161-line spec + ADR-067..072); 5 mandatory P1 hardenings carried forward (M-4 CSPRNG, M-6 streaming gunzip, M-9 SSRF allow-list, M-11 ed25519 DEK signature verify, mTLS key perms); Phase 7b co-pentest dependency on `add-multi-mode-ingestion` surfaced in Dependencies. Complexity L (Large, 8-10 phases expected).
+- [x] Research - Completed (2026-05-10): 02_CODE_RESEARCH.md with 14 library versions verified (oapi-codegen v2.4.0, bbolt v1.4.1, gosnmp v1.37+, goflow2 v2.2.6, google/uuid v1.6.0+, mcuadros/go-syslog v2.3.0 vendored, golang.org/x/crypto/ssh, log/slog stdlib, testify v1.8+, prometheus/client_golang v1.20+, yaml.v3, Go 1.24.3+, distroless static-debian12:nonroot, golangci-lint v2), 10 specific risks catalogued with mitigations (#1 UUIDv5 hex-vs-bytes byte-exactness, #2 AES-GCM cross-language verify, #9 SSRF via DNS rebinding being highest priority), and 10 decisions deferred to /design-system (D-1 admin surface form, D-2 YAML vs JSON, D-3 distroless vs Alpine, D-4 packaging, D-5 bbolt key schema, D-6 goroutine pool sizes, D-7 cert-rotation atomicity, D-8 Prom metrics binding, D-9 nfcapd writer approach, D-10 syslog v2 plan).
+- [x] Design - Completed (2026-05-10): 03_ARCHITECTURE.md (8 sections w/ mermaid context + state machine), 6 ADRs (ADR-077..082 — binary layout, bbolt schema, cert rotation atomicity, cross-language byte-exactness fixtures, safe_dial SSRF defense, collector goroutine model), 03_PROJECT_SPEC.md (20 TRs, 20 NFRs each metric-mapped, interface contracts, testing strategy, rollback plan). All 10 D-* decisions resolved (see "Key Decisions added at /design-system" below). Per-package ownership + lint gates encoded; cross-language fixture procedure documented; D-4 packaging upgraded from research recommendation (tarball + systemd) to all-four-artifacts-from-v1 (deb + rpm + Arch PKGBUILD + tarball + systemd). D-10 syslog library upgraded from research recommendation (mcuadros/go-syslog vendored) to `leodido/go-syslog v4` (active maintenance, parser-only but supports RFC3164 + RFC5424 over UDP/TCP — listener glue is ~50 LOC).
+- [x] Planning - Completed (2026-05-10, 10 phases, ~75 tasks, L-sized): 04_IMPLEMENTATION_PLAN.md — Phase 1 Foundation (go.mod + repo layout + CI + lint + Docker); Phase 2 Crypto primitives + cross-language byte-exactness fixtures (AES-GCM envelope, UUIDv5 idempotency, ed25519 verify, streaming gunzip, 21-case fixture file from netbrain); Phase 3 SSRF defense (internal/safe_dial chokepoint + forbidigo lint gate, M-9); Phase 4 OpenAPI codegen + mTLS transport (oapi-codegen v2 client+models, atomic.Pointer[*http.Client], TLS 1.3 only, 17-error-code action map); Phase 5 Enrollment ceremony (CSR + persist atomically + signature verify fail-closed + idempotent re-enroll guard, M-11 + H-3 redactor); Phase 6 Cert auto-rotation (atomic swap per ADR-079, retry-with-counter on failure); Phase 7 Store-and-forward bbolt (4 data buckets keyed UUIDv7 + meta bucket + priority eviction never-evict-configs + corrupt-recovery); Phase 8 Config poll + heartbeat + device probe (60s±10s, ETag short-circuit, DEK rotation sig verify, median-of-3 probe via safe_dial); Phase 9 Collectors (syslog via leodido/go-syslog v4, netflow via goflow2 + pure-Go nfcapd writer, snmp via gosnmp, configs via SSH; per-collector pool sizes from D-6); Phase 10 CLI + observability + packaging (status/collectors/logs CLI, 18 Prometheus instruments on 127.0.0.1:9090, all 6 distribution artifacts deb/rpm/Arch/tarball/systemd/MSI + Docker). 23 unit + integration test categories catalogued; coverage target ≥85% on security-hot packages; cross-language byte-exactness startup self-test (panic on mismatch) is the canonical regression guard.
+- [~] Implementation - In Progress (Phase 1/10)
+  - Phase 1: ✓ Complete (2026-05-11, **3/3 tests pass / 81.8% coverage on cmd/netbrain-beacon, 0 lint findings**) — go.mod (Go 1.26.3, deps: testify v1.10, prometheus/client_golang reserved for Phase 10); cmd/netbrain-beacon/main.go (`version` subcommand stub + run() unit-testable entrypoint); cmd/netbrain-beacon/main_test.go (happy path + no-args + unknown-subcommand cases); 24 .gitkeep placeholders for the 18 internal/ + 6 packaging/ directories per ADR-077; .golangci.yml v2 with forbidigo rules (M-4 math/rand banned, M-9 net.Dial outside safe_dial banned, M-6 io.ReadAll banned + path exclusions for safe_dial/transport/api/tests); .github/workflows/ci.yml (4 jobs: lint, test on ubuntu+windows matrix, build linux+windows binaries, govulncheck); Makefile with Docker-based targets (alpine for build, debian for race tests); multi-stage Dockerfile (golang:1.26-alpine builder → distroless/static-debian12:nonroot runtime, final image 8.47 MB, runs as UID 65532); .gitignore (state files + generated code + IDE), .editorconfig, README.md upgrade. **Phase 1 had ONE post-write iteration**: errcheck flagged un-checked fmt.Fprintln returns + missing package comment; fixed by adding `_, _ =` pattern and a package docstring. **Cross-compiled binary verification:** linux/amd64 = 1.6 MB ELF statically-linked, windows/amd64 = 1.7 MB PE32+, both print `v0.1.0-dev` from `version` subcommand. Docker image = 8.47 MB, ENTRYPOINT pinned to netbrain-beacon, USER 65532, EXPOSE 9090 (Prometheus loopback per D-8). Note: golangci-lint v2.0.2 (from research) doesn't support Go 1.26.3 go.mod — upgraded to v2.12.2 which is built with Go 1.26.2.
+- [ ] Review - Not started
+- [ ] Security - Not started
+- [ ] Deploy - Not started
+- [ ] Observe - Not started
+- [ ] Retro - Not started
+
+## Detected Stack
+
+Greenfield Go repository — only `initial commit` + 16-byte `README.md` present. All tooling (go.mod, golangci-lint config, GitHub Actions workflow, Dockerfile, Makefile) is **planned**, to be scaffolded in Phase 1 of implementation. Go minor version locked at /research to 1.26.3 (latest stable as of 2026-05-10).
+
+## Applicable Expert Commands
+
+- Native Go knowledge (strong — no language expert command required).
+- `/language/cloud-engineer-pro` — for cross-platform packaging (Linux/Windows), systemd units, Windows service registration, container hardening.
+- `/security` — **MANDATORY Phase 7a** (private key handling, AES-GCM correctness, AAD binding, SSRF allow-list, ed25519 sig verify).
+- `/security/pentest` — **MANDATORY Phase 7b**, co-tested with `add-multi-mode-ingestion` against staging (carries forward the deferred pentest from the platform-side WORKFLOW COMPLETE 2026-05-10).
+
+Phase 7c (`/security/redteam-ai`) NOT applicable — no LLM call paths.
+
+## Key Decisions (locked at /discover)
+
+1. **Issue name:** `add-beacon-service` — kebab-case, prefix `add-`, scope = "the Go beacon binary that runs at customer edge".
+2. **Risk: High.** Justified by private-key handling, cryptographic data path, SSRF surface (device probing), store-and-forward correctness, cross-tenant data path.
+3. **Complexity: L (Large).** 8-10 phases expected at /plan time.
+4. **Out of scope locked:** beacon self-upgrade (v2), beacon-to-beacon hot failover (v2), gRPC, multi-tenant beacon install, macOS/arm64 (v1 is linux/windows amd64 only), TLS 1.2 fallback, custom crypto libraries.
+5. **Locked contract inputs (DO NOT re-litigate):** OpenAPI spec at `services/api-gateway/openapi/beacon-v1.yaml` in the netbrain repo; ADR-067..072.
+6. **Cross-issue Phase 7b co-pentest** for `add-multi-mode-ingestion` must run within 7 days of staging Stage 3 deploy; co-test both halves of the beacon ecosystem in one pass against staging.
+
+## Key Decisions (added at /research)
+
+7. **Crypto: stdlib only.** No third-party AEAD/signature libs. `crypto/aes`, `crypto/cipher`, `crypto/rand`, `crypto/ed25519`, `crypto/x509`.
+8. **Codegen: `oapi-codegen v2` — client + models only** (no server target). OpenAPI 3.1 handled via Overlay shim added in v2.4.0.
+9. **HTTP client: stdlib `net/http`** with explicit `MinVersion: tls.VersionTLS13` (forbidigo lint forbids omission).
+10. **bbolt: v1.4.1+**; no `Stats()` on hot path (avoid x/vulndb #4923 panic on corrupt branch).
+11. **UUID: `github.com/google/uuid` v1.6.0+** for v5 (idempotency key) AND v7 (bbolt record keys for FIFO via sort order).
+12. **Logging: `log/slog`** with redactor middleware that drops `bootstrap_token`, `dek`, `data_key_b64`, `csr_pem`, `enrollment_bundle.bootstrap_token`.
+13. **No CGo anywhere.** `CGO_ENABLED=0` for every cross-compile. Excludes SQLite, libpcap, anything that needs C.
+14. **Go version pin: 1.26.3** (latest stable as of 2026-05-10; includes CVE-2025-22871 net/http fix and all subsequent security patches; oapi-codegen v2.7+ baseline satisfied).
+15. **Test framework: stdlib `testing` + `stretchr/testify/require` + `pgregory.net/rapid`** for property-based crypto tests.
+16. **CI lint: `golangci-lint` v2** with `errcheck`, `gosec`, `bodyclose`, `forbidigo`, `staticcheck`, `gocritic`, `revive`; `govulncheck` as a separate hard-fail step.
+17. **Cross-language byte-exactness test fixtures mandatory** for: UUIDv5 derivation (Python `name.hex()` string, Go `[]byte(hexString)` — NOT raw bytes), AES-GCM envelope round-trip, ed25519 signature verify, canonical-JSON byte string.
+18. **Single-tenant per install** (cert-bound); no globals to preserve v2 multi-tenant option without rewrite.
+
+## Key Decisions (added at /design-system)
+
+D-1..D-10 (research deferrals) RESOLVED. ADR-077..082 written.
+
+### D-1..D-10 resolution
+
+| ID | Decision | Note |
+|---|---|---|
+| D-1 | **CLI subcommands + Prometheus `127.0.0.1:9090`** (no embedded web UI in v1) | smallest attack surface; web UI deferred to v2 |
+| D-2 | **YAML via `gopkg.in/yaml.v3`** | strict-decode, struct tags |
+| D-3 | **`gcr.io/distroless/static-debian12:nonroot`** | UID 65532; no shell, no package manager |
+| D-4 | **deb + rpm + Arch PKGBUILD + tarball + systemd unit + Windows MSI from v1** | upgraded from research recommendation (tarball only); all four Linux artifacts shipped in v1 |
+| D-5 | **UUIDv7 per record** (FIFO via natural sort) | one data bucket per type; ADR-078 |
+| D-6 | **Pools: syslog=8w/1000q, netflow=4w/500q, snmp=16w/200q, configs=4w/100q** | per-collector; drop-with-counter on full; ADR-082 |
+| D-7 | **tmpfile + `os.Rename` + `atomic.Pointer[http.Client]` swap** | no lockfile; ADR-079 |
+| D-8 | **Prometheus ON by default, bound `127.0.0.1:9090`** | `--no-metrics` opts out; loopback-only |
+| D-9 | **`netsampler/goflow2` UDP intake + pure-Go nfcapd writer** (~300 LOC) | no CGo, no nfdump shell-out |
+| D-10 | **`leodido/go-syslog` v4** | actively maintained successor to influxdata fork; supports RFC3164 + RFC5424 |
+
+### ADR summaries (ADR-077..082)
+
+- **ADR-077** — Beacon binary layout: `cmd/netbrain-beacon/main.go` entrypoint, everything else `internal/`, generated OpenAPI client at `internal/api/`. No `pkg/`. Compiler-level enforcement of import boundary. Forbidigo lint rules co-located with the layout (math/rand in crypto/, net.Dial outside safe_dial/, TLS without MinVersion, etc.).
+- **ADR-078** — Store-and-forward bbolt schema: 4 data buckets (`flows`, `logs`, `snmp`, `configs`) keyed by 16-byte UUIDv7, one `meta` bucket with cursors + bytes:type counters + schema_version. Eviction janitor reads `meta:bytes:*` in O(1); priority `flows → logs → snmp → never configs`. Plaintext-at-rest documented as known trust assumption (file mode 0600 + host trust covers it).
+- **ADR-079** — Cert rotation atomicity: tmpfile (`beacon.crt.new` / `beacon.key.new`) → verify pubkey + chain → `os.Rename` (atomic on POSIX + NTFS) → build new `*tls.Config` → `atomic.Pointer[http.Client].Store(new)`. Old in-flight requests complete on old client; new requests use new client. No lockfile, no SIGHUP, no in-place transport mutation.
+- **ADR-080** — Cross-language byte-exactness fixtures: 21 JSON fixture cases under `tests/fixtures/cross_lang/` (10 UUIDv5, 5 AES-GCM round-trip, 3 ed25519 verify, 3 canonical JSON), generated by `_generator.py` importing the netbrain platform crypto modules. Go-side tests load + assert byte-equal. Startup self-test `init()` panics on regression. Required CI gate.
+- **ADR-081** — `internal/safe_dial` SSRF defense package: single chokepoint for every device-IP dial. Resolves DNS once, applies M-9 allow-list (`169.254.0.0/16`, `127.0.0.0/8`, `0.0.0.0`, `224.0.0.0/4`, `ff00::/8`, `fe80::/10`) to the resolved IP, dials the IP literal. Defends DNS rebinding (R-9). golangci-lint `forbidigo` rule forbids `net.Dial*` outside `internal/safe_dial/**` (single audited exception for platform server dial in transport/).
+- **ADR-082** — Collector goroutine model: per-collector worker pool with bounded channel and drop-on-full back-pressure. Sizes locked at D-6. Single shared writer goroutine batches bbolt commits (≤64 KB or ≤100 records or 5 s). Single sender goroutine handles egress. Graceful shutdown bounded at 30 s.
+
+## Mandatory pre-implementation security requirements
+
+Carried forward from `beacon-protocol-and-enrollment` parent issue. Must appear as explicit acceptance criteria in `04_IMPLEMENTATION_PLAN.md`.
+
+### P1 — High severity, must land before any data flows
+
+- **M-4 (CSPRNG):** AES-GCM IVs MUST be generated via `crypto/rand.Read` — `math/rand` is forbidden in any file under `internal/crypto/**`. Add CI lint gate.
+- **M-6 (Streaming gunzip):** Server-sent compressed config payloads MUST be decompressed via streaming `gzip.NewReader` with per-call byte cap; `io.ReadAll(gzip.NewReader(...))` is forbidden (CWE-409). Regression test: 4 KB encrypted → 100 MB plaintext zeros → abort within 100 ms.
+- **M-9 (SSRF defense):** Device IP allow-list MUST reject:
+  - link-local: `169.254.0.0/16`
+  - loopback: `127.0.0.0/8`
+  - unspecified: `0.0.0.0`
+  - multicast: `224.0.0.0/4` and `ff00::/8`
+  - IPv6 link-local: `fe80::/10`
+  - Reject BEFORE issuing TCP-connect or any probe to the address. CI lint gate: any `net.Dial*` call to a device-supplied address must go through `internal/safe_dial`.
+- **M-11 (DEK rotation signature verify):** When server delivers a rotated DEK via `X-Beacon-DataKey-Signature` header (ed25519), beacon MUST verify the signature against the platform pubkey from the enrollment bundle BEFORE accepting the new DEK (CWE-345). Tampered signature → reject + log + retain old DEK.
+- **mTLS key handling:** Private key on disk MUST be 0600 perms; CWE-732 violation otherwise. Auto-rotate cert at 80% lifetime per ADR-067; persist atomically via tmpfile + rename.
+
+### Re-pentest required
+
+After this issue's `/deploy-plan`, run `/security/pentest add-beacon-service` co-tested with `add-multi-mode-ingestion` against staging. Specifically targets:
+- H-1 nginx REPLACE semantics (defer empirical confirmation to real Go client probe).
+- H-2 cross-beacon access (beacon-A cert + URL `{B_id}` → must 403).
+- H-4 token replay across IPs after failed enrollment.
+- M-6 gzip bomb at every `/data/*` endpoint.
+- M-9 SSRF probe to forbidden IPs.
+
+## Artifacts
+
+- 00_STATUS.md (this file)
+- 01_DISCOVERY.md
+- 02_CODE_RESEARCH.md
+- 03_ARCHITECTURE.md
+- 03_ADR-077-beacon-binary-layout.md
+- 03_ADR-078-store-and-forward-bbolt-schema.md
+- 03_ADR-079-cert-rotation-strategy.md
+- 03_ADR-080-cross-language-byte-exactness-fixtures.md
+- 03_ADR-081-ssrf-safe-dial-package.md
+- 03_ADR-082-collector-goroutine-model.md
+- 03_PROJECT_SPEC.md
+- 04_IMPLEMENTATION_PLAN.md
+
+## Charter
+
+Implement the **customer-edge half** of the beacon ecosystem. Deliverables:
+
+1. `cmd/netbrain-beacon/main.go` — CLI entrypoint with subcommands `enroll`, `daemon`, `status`, `version`.
+2. `internal/api/` — OpenAPI client generated via `oapi-codegen v2` against the netbrain-side beacon-v1.yaml (do not edit by hand).
+3. `internal/enroll/` — bootstrap-token-then-CSR ceremony per ADR-067.
+4. `internal/crypto/` — AES-256-GCM envelope encrypt/decrypt; ed25519 signature verify; CSPRNG IVs.
+5. `internal/transport/` — mTLS HTTP client; cert auto-rotate at 80% lifetime; key 0600 perms.
+6. `internal/config_poll/` — 60 s ± 10 s poll loop with ETag short-circuit and heartbeat piggyback.
+7. `internal/collectors/{syslog,netflow,snmp,configs}/` — 4 collector implementations.
+8. `internal/store/` — bbolt store-and-forward buffer (5 GB / 14 d cap; priority eviction).
+9. `internal/probe/` — TCP-connect device-latency probe (SYN/SYN-ACK; median-of-3; ports 22 → 161 → 80) with SSRF allow-list.
+10. `internal/admin/` — local admin surface (form decided at /design-system).
+11. `internal/safe_dial/` — SSRF defense wrapper that all device-IP dials must go through.
+12. `Dockerfile` (Alpine or distroless) + `Makefile` + `.github/workflows/ci.yml` + `.golangci.yml`.
+13. `docs/runbooks/beacon-binary-operations.md` — enroll / re-enroll / cert-rotation / store-and-forward inspection / log tail.
+
+## Preconditions (must be at WORKFLOW COMPLETE before this issue starts)
+
+- [x] `beacon-protocol-and-enrollment` — WORKFLOW COMPLETE 2026-05-01 (ADR-067..072 + OpenAPI spec locked)
+- [x] `add-multi-mode-ingestion` — WORKFLOW COMPLETE 2026-05-10 (platform side; 17 endpoints live; Stage 1 deployed flag-off)
+
+## Pending cross-issue work (carry forward to retro)
+
+- **Phase 7b co-pentest for `add-multi-mode-ingestion`** — must run with this issue's beacon as the test client. Reference: `c:/Users/Anderson Leite/code/netbrain/.claude/planning/add-multi-mode-ingestion/09_DEPLOY_PLAN.md` §"Phase 7b pentest mandatory" + auto-memory `pending_beacon_pentest.md`. Surface this in EVERY downstream phase from `/design-system` onward.

@@ -1,0 +1,44 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test output
+*.test
+*.out
+*.prof
+coverage.txt
+coverage.html
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local state (never commit these — operator-generated)
+/data/
+/state/
+*.crt
+*.key
+*.pem
+dek.bin
+dek.prev.bin
+beacon-state.bbolt*
+enrollment-metadata.json
+etag.txt
+
+# Generated code (regenerated via `make generate`)
+internal/api/zz_generated.go
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go workspaces (we don't use them)
+go.work
+go.work.sum
