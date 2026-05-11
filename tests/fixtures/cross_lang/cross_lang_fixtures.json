@@ -1,0 +1,194 @@
+{
+  "_meta": {
+    "generated_at": "2026-05-11T12:37:34.354200+00:00",
+    "generator": "scripts/beacon/generate_cross_lang_fixtures.py",
+    "purpose": "Byte-exactness fixtures for the Go beacon's internal/crypto tests (ADR-080)",
+    "refresh_policy": "Regenerate after Python crypto changes; then update Go side until TestCrossLangFixtures passes. NEVER regenerate to silence a failing Go test.",
+    "ns_beacon_batch": "c4d2c5e0-1c9b-5b9e-8d0a-7f3a4e1c2b3d",
+    "ed25519_pubkey_raw_b64": "hODy2kSvK+MIedYsG8mcMUe73GGNDQvyzytAq8NNPiU=",
+    "envelope_version_byte": 1
+  },
+  "uuid_v5_idempotency": [
+    {
+      "case_id": "zero_length",
+      "beacon_id": "11111111-1111-4111-a111-111111111111",
+      "plaintext_b64": "",
+      "expected_idempotency_key": "4acceffe-1dfb-52de-8ff1-cc8629646925"
+    },
+    {
+      "case_id": "one_byte",
+      "beacon_id": "22222222-2222-4222-a222-222222222222",
+      "plaintext_b64": "AA==",
+      "expected_idempotency_key": "9008c75b-12ba-5004-9bee-1029deb989a7"
+    },
+    {
+      "case_id": "ascii",
+      "beacon_id": "33333333-3333-4333-a333-333333333333",
+      "plaintext_b64": "aGVsbG8gd29ybGQ=",
+      "expected_idempotency_key": "14ed5ba7-c8f0-5ce9-b267-b19d7c633b77"
+    },
+    {
+      "case_id": "ascii_with_newlines",
+      "beacon_id": "44444444-4444-4444-a444-444444444444",
+      "plaintext_b64": "bGluZTEKbGluZTIK",
+      "expected_idempotency_key": "cbb04ed2-21f4-5b7c-b04e-1ecc185c04b0"
+    },
+    {
+      "case_id": "binary",
+      "beacon_id": "55555555-5555-4555-a555-555555555555",
+      "plaintext_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "expected_idempotency_key": "aa33cae5-a833-516a-9fce-40d79ed32e47"
+    },
+    {
+      "case_id": "unicode_utf8",
+      "beacon_id": "66666666-6666-4666-a666-666666666666",
+      "plaintext_b64": "Y2Fmw6kg5pel5pys",
+      "expected_idempotency_key": "c4e3b2ac-8a51-582c-8240-ce1ec390865f"
+    },
+    {
+      "case_id": "kb_zeros",
+      "beacon_id": "77777777-7777-4777-a777-777777777777",
+      "plaintext_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "expected_idempotency_key": "ef73fe0a-bfeb-54d0-aaab-c036a9915f6b"
+    },
+    {
+      "case_id": "realistic_json",
+      "beacon_id": "88888888-8888-4888-a888-888888888888",
+      "plaintext_b64": "eyJtZXNzYWdlcyI6W3sidHMiOiIyMDI2LTA1LTExVDEyOjAwOjAwWiIsImxldmVsIjoiaW5mbyIsIm1zZyI6Im9rIn1dfQ==",
+      "expected_idempotency_key": "6e074747-51ad-5e25-bdf1-4fdfbae03957"
+    },
+    {
+      "case_id": "dup_plaintext_diff_beacon_a",
+      "beacon_id": "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+      "plaintext_b64": "c2FtZSBwbGFpbnRleHQ=",
+      "expected_idempotency_key": "d591946b-6f97-52f4-be2e-097ead0cb82e"
+    },
+    {
+      "case_id": "dup_plaintext_diff_beacon_b",
+      "beacon_id": "bbbbbbbb-bbbb-4bbb-abbb-bbbbbbbbbbbb",
+      "plaintext_b64": "c2FtZSBwbGFpbnRleHQ=",
+      "expected_idempotency_key": "5c7e3d91-d7be-530b-b448-e3d5eebe4886"
+    }
+  ],
+  "aes_gcm_envelope": [
+    {
+      "case_id": "empty_plaintext",
+      "dek_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "dek_version": 1,
+      "iv_b64": "AQEBAQEBAQEBAQEB",
+      "idempotency_key": "12345678-1234-4234-a234-123456789abc",
+      "aad_b64": "ARI0VngSNEI0ojQSNFZ4mrw=",
+      "plaintext_b64": "",
+      "expected_envelope_b64": "AQEBAQEBAQEBAQEBAQFHSsUpXF1AF4xLHoW5pN/d"
+    },
+    {
+      "case_id": "ascii_short",
+      "dek_b64": "ERERERERERERERERERERERERERERERERERERERERERE=",
+      "dek_version": 1,
+      "iv_b64": "AgICAgICAgICAgIC",
+      "idempotency_key": "22345678-1234-4234-a234-223456789abc",
+      "aad_b64": "ASI0VngSNEI0ojQiNFZ4mrw=",
+      "plaintext_b64": "aGVsbG8=",
+      "expected_envelope_b64": "AQECAgICAgICAgICAgIqVWJCiVe3O9uO2UxkDGE2iiWeMoE="
+    },
+    {
+      "case_id": "binary_block",
+      "dek_b64": "//////////////////////////////////////////8=",
+      "dek_version": 7,
+      "iv_b64": "AwMDAwMDAwMDAwMD",
+      "idempotency_key": "32345678-1234-4234-a234-323456789abc",
+      "aad_b64": "BzI0VngSNEI0ojQyNFZ4mrw=",
+      "plaintext_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw==",
+      "expected_envelope_b64": "AQcDAwMDAwMDAwMDAwOuYs2HMsSg4l5AceV30uUbN5ir0GTmsgc1AjIapGw2nD8lP/WVMco+S5F8gCPC+NOrpdVYONRlyF1kLaYJcZcqAYnEg0pbUJQc/ZI1XXBCMg=="
+    },
+    {
+      "case_id": "kb_plaintext",
+      "dek_b64": "q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6s=",
+      "dek_version": 42,
+      "iv_b64": "BAQEBAQEBAQEBAQE",
+      "idempotency_key": "42345678-1234-4234-a234-423456789abc",
+      "aad_b64": "KkI0VngSNEI0ojRCNFZ4mrw=",
+      "plaintext_b64": "eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eA==",
+      "expected_envelope_b64": "ASoEBAQEBAQEBAQEBASlx9I+eWyPbCPFABQVVJlgKYwnzsrp0Ujo6UjcNtplBelIj8MV40zpzk7SRX/rsQ+VibY8Mlk2eVejdKpeq7r8Zb5Vr2ML0AddcPlfMGHtG977Hey2rOLk09yWyxeEi/zV50PxXueYG7clVAONjcPdV402585LiHPk5WsY+ZHh3Ng/XcSkeZ1rdKgpWyoABhOyfk3vMnc/MU6eH0rHDLJudY2TIAb0I1z2Cz9Lu4C7yI/g22NZ3mXDAKfJLDbBG+q3ktqaHOqMvA2qd86y4UKUuhr408xTOhoquNOe1saya+2e6cLWBYaTJO3hW/gL/lOx6gkkjE67GVZRASkgm1MBaQIjtWxRVtMI76q2IyeWmw8rY+D1BqAgoZvVmxdG490OEH0NVrO8xAwGZyW9U9AS5tzqHO9LigKyv7g5hY1RmSnLyxy25O4bZo/HH5bGZoD8BnuLQV6v37jVo3GF+HzWTGddr9joYPn8MVcFTq5gRYQplLDIai2zf6tKRsFeXrQv2zlakG/JaKkKGvpCycVrdOJSU64LOSwPofFIG2/45aZM9gF6eGXK6S8t2sK6J2Cp6fZx0LZ9PRqPMgVknUX7viYMEe6o9Rleq768ijvNyW8ZmDu3dUPal3cPFPJUSOhNIVVZdDD8QF4N/sf1IbcPHDrVJtZJ66UYSFc3sy1YtawoB6ECMnL2fxFyHru/F1KhX52MBuTOZbT3ltnmnwYvAm6nMz1KlQ97BxqatTQCZlh6zwiI5GgciWhahGD82tLD6F4IoZr6ZzVMFXzRRBrs5cGdkmDdlHAZBg1r6aiQ98vRngScbSEClLiCmKLP6EWC4c+j6feVFB/7YbKwqI/ilRZF+SZEtbEURa7wF6BAHhd1Ki/DMzbC2JHlr4OlWqjo8xBQY4Ijt9SAM6+SWmTOA37K49lN1phqKm4DUk6KpvHdwff3KdSPRbTE05KJwuGTEFLkX2DpSi0bordHQiB3La0Eu8GRd4YlgXNM+wZKqUpXL+yso/IR8owv9aBkQOmrFRrcr2lMCD3sEjvQYdtyuLCbqi8b2F/T3jgGwPY/1t1HwvQHvB6aqj403zTOoCG8BfUIIHlkwGGOogDZeWt6uh6IzkN30WIl8AY/ZY/rCwl46ZHMjeRBeb+b6gY7EjVzFsQxJjpzuDwOnTnFt7SyFQcJIubOY9mnY2fKwkhCEwCLKSixIRUHXfHRhmRjC3DUPHK1kl1LF8hFSSSbqe+kM1sUSyacDY/huN2FexCAdK0wbMykZbLUdcx8bBZAcDOz6w56uWAO7TNapi2PoQvCS1kntXo0LcC6tpd3OnD2dq7/YNF4U0cPNk/SE/aY+9KD+IAiGwXTbTR4A0AoMMlOto3YDXeqz2EP3Pd7xTyLKw=="
+    },
+    {
+      "case_id": "realistic_log_batch",
+      "dek_b64": "w8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8M=",
+      "dek_version": 1,
+      "iv_b64": "BQUFBQUFBQUFBQUF",
+      "idempotency_key": "52345678-1234-4234-a234-523456789abc",
+      "aad_b64": "AVI0VngSNEI0ojRSNFZ4mrw=",
+      "plaintext_b64": "eyJzdHJlYW0iOnsidGVuYW50IjoiYWNtZSJ9LCJ2YWx1ZXMiOltbIjE3NDcwMDAwMDAwMDAwMDAwMDAiLCJJTkZPIG9rIl1dfQ==",
+      "expected_envelope_b64": "AQEFBQUFBQUFBQUFBQV7Ehwsms7JGp1r7V0Z1jHFHZV3rOQO620jmfh5HiAOd76TG/NidtHNMOI99GCf6zRWyMHDZiwM3cb4PfLlrikC4iLeNclAQafjBrkv22/Wypw3n/Z5LjdNlA=="
+    }
+  ],
+  "ed25519_signed_bundle": [
+    {
+      "case_id": "basic_dek_rotation",
+      "payload": {
+        "beacon_id": "abcdef00-1234-4567-8901-abcdef012345",
+        "data_key_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "data_key_version": 2,
+        "issued_at": "2026-05-11T12:34:56Z"
+      },
+      "expected_canonical_b64": "eyJiZWFjb25faWQiOiJhYmNkZWYwMC0xMjM0LTQ1NjctODkwMS1hYmNkZWYwMTIzNDUiLCJkYXRhX2tleV9iNjQiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBPSIsImRhdGFfa2V5X3ZlcnNpb24iOjIsImlzc3VlZF9hdCI6IjIwMjYtMDUtMTFUMTI6MzQ6NTZaIn0=",
+      "expected_signature_b64": "rqai2Pq9Nhvj9OQ5GGH8OeDdaD3nPUD+l1C/W4HbqcqbsMS9FGN96txls27yg88NUrcAP87rimcuv+KGs40rDQ=="
+    },
+    {
+      "case_id": "unicode_field",
+      "payload": {
+        "beacon_id": "11111111-2222-4333-8444-555566667777",
+        "data_key_b64": "/////////////////////////////////////////w==",
+        "data_key_version": 255,
+        "issued_at": "2030-12-31T23:59:59Z",
+        "note": "rotated due to incident — see audit log"
+      },
+      "expected_canonical_b64": "eyJiZWFjb25faWQiOiIxMTExMTExMS0yMjIyLTQzMzMtODQ0NC01NTU1NjY2Njc3NzciLCJkYXRhX2tleV9iNjQiOiIvLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vL3c9PSIsImRhdGFfa2V5X3ZlcnNpb24iOjI1NSwiaXNzdWVkX2F0IjoiMjAzMC0xMi0zMVQyMzo1OTo1OVoiLCJub3RlIjoicm90YXRlZCBkdWUgdG8gaW5jaWRlbnQgXHUyMDE0IHNlZSBhdWRpdCBsb2cifQ==",
+      "expected_signature_b64": "1n8n87wZSKoWAJLQVWAtlt4BIE2G+lHPg5xgmWckTHZNUdACp3jfjBZJneBS/B3zgWY5VcgFBQYFEjDCH3/fDA=="
+    },
+    {
+      "case_id": "alphabetical_key_order",
+      "payload": {
+        "issued_at": "2026-05-11T12:34:56Z",
+        "data_key_version": 2,
+        "data_key_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "beacon_id": "abcdef00-1234-4567-8901-abcdef012345"
+      },
+      "expected_canonical_b64": "eyJiZWFjb25faWQiOiJhYmNkZWYwMC0xMjM0LTQ1NjctODkwMS1hYmNkZWYwMTIzNDUiLCJkYXRhX2tleV9iNjQiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBPSIsImRhdGFfa2V5X3ZlcnNpb24iOjIsImlzc3VlZF9hdCI6IjIwMjYtMDUtMTFUMTI6MzQ6NTZaIn0=",
+      "expected_signature_b64": "rqai2Pq9Nhvj9OQ5GGH8OeDdaD3nPUD+l1C/W4HbqcqbsMS9FGN96txls27yg88NUrcAP87rimcuv+KGs40rDQ=="
+    }
+  ],
+  "canonical_json": [
+    {
+      "case_id": "nested_dict_unsorted",
+      "payload": {
+        "z": 1,
+        "a": {
+          "y": 2,
+          "b": 3
+        },
+        "m": [
+          1,
+          2,
+          3
+        ]
+      },
+      "expected_canonical_b64": "eyJhIjp7ImIiOjMsInkiOjJ9LCJtIjpbMSwyLDNdLCJ6IjoxfQ=="
+    },
+    {
+      "case_id": "ascii_escape_required",
+      "payload": {
+        "msg": "line1\nline2\twith tab"
+      },
+      "expected_canonical_b64": "eyJtc2ciOiJsaW5lMVxubGluZTJcdHdpdGggdGFiIn0="
+    },
+    {
+      "case_id": "non_ascii_escaped",
+      "payload": {
+        "city": "São Paulo",
+        "n": "日本"
+      },
+      "expected_canonical_b64": "eyJjaXR5IjoiU1x1MDBlM28gUGF1bG8iLCJuIjoiXHU2NWU1XHU2NzJjIn0="
+    }
+  ]
+}
