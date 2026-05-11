@@ -1,0 +1,1276 @@
+openapi: 3.1.0
+
+info:
+  title: NetBrain Beacon Protocol
+  description: |
+    Wire contract for the netbrain-beacon ↔ NetBrain platform protocol. Locked by:
+
+    - **ADR-067** — Beacon Enrollment Ceremony (bootstrap-token-then-CSR)
+    - **ADR-068** — Beacon Data Encryption Model (per-install AES-256-GCM DEK)
+    - **ADR-069** — Beacon Wire Format & Framing (this document)
+    - **ADR-070** — Beacon Config Polling Protocol
+    - **ADR-071** — Beacon Store-and-Forward Engine
+    - **ADR-072** — Multi-Proxy Device Deduplication
+
+    Three security schemes are in use:
+
+    - `bearerJwt` — admin user JWT, used on `/api/v1/beacons/enrollment-tokens` and admin-side `/api/v1/beacons/{id}` paths (port 8080).
+    - `bootstrapToken` — one-time-use token authenticating `POST /api/v1/beacons/enroll` (port 8080).
+    - `mTls` — mutual TLS via per-beacon client cert; nginx terminates and forwards `X-Client-Cert-Fingerprint` to the gateway (port 8443).
+
+    Application-layer payload encryption (per ADR-068) is layered ON TOP of mTLS for `/data/*` endpoints. The encrypted body has the byte layout:
+
+    ```
+    +-1B-+-1B-+-12B-+--N--+-16B-+
+    | 01 | dv | iv  | ct  | tag |
+    +----+----+-----+-----+-----+
+    ```
+
+    See `EncryptedEnvelope` schema below.
+  version: "1.0.0"
+  contact:
+    name: NetBrain Engineering
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://netbrain.example.com
+    description: Customer-deployed NetBrain platform (placeholder)
+
+tags:
+  - name: beacon-enrollment
+    description: One-time-use bootstrap tokens + the enrollment ceremony.
+  - name: beacon-admin
+    description: Admin CRUD on beacon registrations (port 8080, JWT).
+  - name: beacon-control
+    description: Beacon configuration polling, heartbeat, and cert lifecycle (port 8443, mTLS).
+  - name: beacon-data
+    description: Beacon → platform data push (port 8443, mTLS, encrypted payloads).
+
+# ---------------------------------------------------------------------------
+# Security schemes
+# ---------------------------------------------------------------------------
+components:
+  securitySchemes:
+    bearerJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Admin user JWT issued by `/api/v1/auth/login`.
+
+    bootstrapToken:
+      type: http
+      scheme: bearer
+      description: |
+        One-time-use bootstrap token (format `nbb_<60-hex-chars>`). Used ONLY on
+        `POST /api/v1/beacons/enroll`. Server marks `used_at` on first use; subsequent
+        attempts return 401.
+
+    mTls:
+      type: mutualTLS
+      description: |
+        Per-beacon client certificate issued at enrollment. nginx (port 8443) verifies
+        the cert against the platform CA; on success forwards `X-Client-Cert-Fingerprint`
+        header to the gateway, which uses it as the auth lookup key.
+
+  # -------------------------------------------------------------------------
+  # Schemas
+  # -------------------------------------------------------------------------
+  schemas:
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable string identifier (e.g. `BEACON_TOKEN_EXPIRED`).
+              example: BEACON_TOKEN_EXPIRED
+            message:
+              type: string
+              description: Human-readable description.
+              example: Bootstrap token expired at 2026-04-30T18:00:00Z
+            details:
+              type: object
+              additionalProperties: true
+              description: Optional structured context.
+
+    SimpleError:
+      type: object
+      required: [detail]
+      description: Used on data-plane endpoints where the request body is opaque encrypted data.
+      properties:
+        detail:
+          type: string
+          example: Payload too large
+
+    # ---- Enrollment ----
+
+    EnrollmentTokenCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Operator-supplied beacon display name.
+          example: branch-sao-paulo-01
+        ttl_hours:
+          type: integer
+          minimum: 1
+          maximum: 24
+          default: 24
+
+    EnrollmentTokenResponse:
+      type: object
+      required: [token_id, bootstrap_token, expires_at, enrollment_bundle]
+      properties:
+        token_id:
+          type: string
+          format: uuid
+        bootstrap_token:
+          type: string
+          pattern: ^nbb_[0-9a-f]{60}$
+          description: Plaintext token. Shown ONCE.
+        expires_at:
+          type: string
+          format: date-time
+        enrollment_bundle:
+          type: string
+          format: byte
+          description: Base64-encoded JSON bundle (token + platform CA cert + endpoint URL, ed25519-signed).
+      example:
+        token_id: 11111111-1111-1111-1111-111111111111
+        bootstrap_token: nbb_a1b2c3d4e5f60718293a4b5c6d7e8f9012345678901234567890abcdef0
+        expires_at: "2026-05-02T18:00:00Z"
+        enrollment_bundle: eyJib290c3RyYXBfdG9rZW4iOiAibmJiX...
+
+    EnrollmentTokenListItem:
+      type: object
+      required: [token_id, name, token_prefix, expires_at, created_by_username, created_at]
+      properties:
+        token_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        token_prefix:
+          type: string
+          example: nbb_a1b2
+        expires_at:
+          type: string
+          format: date-time
+        used_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_by_username:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    BeaconMetadata:
+      type: object
+      required: [version, os, hostname]
+      properties:
+        version:
+          type: string
+          pattern: ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z\.\-]+)?$
+          description: Beacon binary semver.
+          example: "0.1.0"
+        os:
+          type: string
+          enum: [linux/amd64, linux/arm64, windows/amd64, darwin/amd64, darwin/arm64]
+        hostname:
+          type: string
+          pattern: ^[a-zA-Z0-9][a-zA-Z0-9\-\.]{0,254}$
+          maxLength: 255
+          description: >
+            RFC 1123 hostname pattern. Strict validation defends against stored XSS in the
+            admin UI's beacon list (defence-in-depth — the UI must also escape on render).
+
+    BeaconEnrollRequest:
+      type: object
+      required: [bootstrap_token, csr_pem, beacon_metadata]
+      properties:
+        bootstrap_token:
+          type: string
+          pattern: ^nbb_[0-9a-f]{60}$
+        csr_pem:
+          type: string
+          description: PEM-encoded CSR with EMPTY Subject (server rebuilds identity per ADR-067).
+        beacon_metadata:
+          $ref: '#/components/schemas/BeaconMetadata'
+      example:
+        bootstrap_token: nbb_a1b2c3d4e5f60718293a4b5c6d7e8f9012345678901234567890abcdef0
+        csr_pem: |
+          -----BEGIN CERTIFICATE REQUEST-----
+          MIIBfDCB4gIBADAAMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE…
+          -----END CERTIFICATE REQUEST-----
+        beacon_metadata:
+          version: "0.1.0"
+          os: linux/amd64
+          hostname: beacon-sp-branch-01
+
+    BeaconEnrollResponse:
+      type: object
+      required:
+        - beacon_id
+        - client_cert_pem
+        - ca_cert_pem
+        - data_key_b64
+        - data_key_version
+        - config_endpoint
+        - data_endpoint
+        - heartbeat_interval_seconds
+        - log_batch_max_bytes
+        - log_batch_max_age_seconds
+      properties:
+        beacon_id:
+          type: string
+          format: uuid
+        client_cert_pem:
+          type: string
+        ca_cert_pem:
+          type: string
+        data_key_b64:
+          type: string
+          format: byte
+          description: Base64 of 32 random bytes. Per-install AES-256-GCM DEK. Transmitted ONCE.
+        data_key_version:
+          type: integer
+          minimum: 1
+        config_endpoint:
+          type: string
+          format: uri
+        data_endpoint:
+          type: string
+          format: uri
+        heartbeat_interval_seconds:
+          type: integer
+          default: 60
+        log_batch_max_bytes:
+          type: integer
+          default: 1048576
+        log_batch_max_age_seconds:
+          type: integer
+          default: 5
+
+    # ---- Beacon admin ----
+
+    BeaconStatus:
+      type: object
+      required:
+        - id
+        - tenant_id
+        - name
+        - cert_serial
+        - cert_fingerprint_sha256
+        - cert_not_before
+        - cert_not_after
+        - data_key_version
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9\-]{0,62}$
+        name:
+          type: string
+        cert_serial:
+          type: string
+        cert_fingerprint_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+        cert_not_before:
+          type: string
+          format: date-time
+        cert_not_after:
+          type: string
+          format: date-time
+        data_key_version:
+          type: integer
+        last_seen_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_config_hash:
+          type: string
+          nullable: true
+        last_clock_skew_seconds:
+          type: number
+          nullable: true
+        beacon_version:
+          type: string
+          nullable: true
+        beacon_os:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [active, revoked, expired]
+        pending_restart_required:
+          type: boolean
+          default: false
+          description: >
+            True when the beacon has received a config containing non-hot-reloadable
+            fields (e.g., syslog/netflow listen addresses) that require a process
+            restart to apply. Derived server-side by comparing the config hash the
+            beacon reported in its last heartbeat (`pending_config_hash`) against the
+            current `beacon_configs.config_hash`, then checking whether the diff
+            touches any restart-required fields. Surfaced as an actionable alert in
+            the admin UI.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    BeaconListResponse:
+      type: object
+      required: [beacons, total]
+      properties:
+        beacons:
+          type: array
+          items:
+            $ref: '#/components/schemas/BeaconStatus'
+        total:
+          type: integer
+
+    # ---- Config polling ----
+
+    BeaconConfigCollectorsSnmp:
+      type: object
+      required: [enabled, version, poll_interval_seconds, device_ips]
+      properties:
+        enabled:
+          type: boolean
+        version:
+          type: string
+          enum: [v2c, v3]
+        poll_interval_seconds:
+          type: integer
+          minimum: 30
+          maximum: 3600
+        device_ips:
+          type: array
+          items:
+            type: string
+        v3_user:
+          type: string
+          nullable: true
+        v3_auth_protocol:
+          type: string
+          enum: [SHA, SHA256, SHA512]
+          nullable: true
+        v3_auth_key_encrypted:
+          type: string
+          nullable: true
+          description: AES-256-GCM-encrypted with the beacon's DEK.
+        v3_priv_protocol:
+          type: string
+          enum: [AES128, AES256]
+          nullable: true
+        v3_priv_key_encrypted:
+          type: string
+          nullable: true
+        oids:
+          type: array
+          items:
+            type: string
+
+    BeaconConfigCollectorsSyslog:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        udp_listen:
+          type: string
+          default: 0.0.0.0:514
+        tcp_listen:
+          type: string
+          default: 0.0.0.0:1514
+
+    BeaconConfigCollectorsNetflow:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        udp_listen:
+          type: string
+          default: 0.0.0.0:2055
+        accept_versions:
+          type: array
+          items:
+            type: string
+            enum: [v5, v9, ipfix]
+
+    BeaconConfigDevice:
+      type: object
+      required: [device_id, host, vendor, ssh_user, ssh_key_encrypted]
+      properties:
+        device_id:
+          type: string
+        host:
+          type: string
+        vendor:
+          type: string
+        ssh_user:
+          type: string
+        ssh_key_encrypted:
+          type: string
+          description: AES-256-GCM-encrypted with the beacon's DEK.
+
+    BeaconConfigCollectorsConfigCollection:
+      type: object
+      required: [enabled, schedule_cron]
+      properties:
+        enabled:
+          type: boolean
+        schedule_cron:
+          type: string
+          example: "0 2 * * *"
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/BeaconConfigDevice'
+
+    BeaconConfigCollectors:
+      type: object
+      required: [snmp, syslog, netflow, config_collection]
+      properties:
+        snmp:
+          $ref: '#/components/schemas/BeaconConfigCollectorsSnmp'
+        syslog:
+          $ref: '#/components/schemas/BeaconConfigCollectorsSyslog'
+        netflow:
+          $ref: '#/components/schemas/BeaconConfigCollectorsNetflow'
+        config_collection:
+          $ref: '#/components/schemas/BeaconConfigCollectorsConfigCollection'
+
+    BeaconConfigTransport:
+      type: object
+      properties:
+        log_batch_max_bytes:
+          type: integer
+          minimum: 1024
+          maximum: 5242880
+          default: 1048576
+        log_batch_max_age_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+          default: 5
+        flow_batch_max_bytes:
+          type: integer
+          default: 5242880
+        flow_batch_max_age_seconds:
+          type: integer
+          default: 30
+        config_batch_max_age_seconds:
+          type: integer
+          default: 60
+        retry_max_seconds:
+          type: integer
+          minimum: 30
+          maximum: 3600
+          default: 300
+
+    BeaconConfigStore:
+      type: object
+      properties:
+        max_size_bytes:
+          type: integer
+          minimum: 104857600
+          default: 5368709120
+        max_age_seconds:
+          type: integer
+          minimum: 86400
+          default: 1209600
+        eviction_priority:
+          type: array
+          items:
+            type: string
+            enum: [flows, logs, snmp]
+          default: [flows, logs, snmp]
+
+    BeaconConfigHeartbeat:
+      type: object
+      properties:
+        interval_seconds:
+          type: integer
+          minimum: 30
+          maximum: 600
+          default: 60
+        jitter_seconds:
+          type: integer
+          minimum: 0
+          maximum: 60
+          default: 10
+
+    BeaconConfig:
+      type: object
+      required: [collectors, transport, store, heartbeat]
+      properties:
+        beacon_metadata:
+          type: object
+          additionalProperties: true
+        collectors:
+          $ref: '#/components/schemas/BeaconConfigCollectors'
+        transport:
+          $ref: '#/components/schemas/BeaconConfigTransport'
+        store:
+          $ref: '#/components/schemas/BeaconConfigStore'
+        heartbeat:
+          $ref: '#/components/schemas/BeaconConfigHeartbeat'
+
+    BeaconConfigResponse:
+      type: object
+      required: [config_hash, config]
+      properties:
+        config_hash:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          description: sha256 of canonicalized JSON config.
+        config:
+          $ref: '#/components/schemas/BeaconConfig'
+
+    # ---- Heartbeat ----
+
+    DeviceLatencyProbe:
+      type: object
+      required: [device_ip, median_latency_ms, probe_count]
+      properties:
+        device_ip:
+          type: string
+        median_latency_ms:
+          type: number
+          minimum: 0
+        probe_count:
+          type: integer
+          minimum: 1
+          maximum: 10
+
+    BeaconHeartbeatRequest:
+      type: object
+      required:
+        - timestamp
+        - uptime_seconds
+        - beacon_version
+        - clock_skew_seconds
+        - queue_depths
+        - store_size_bytes
+        - evictions_total
+        - replay_lag_seconds
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        uptime_seconds:
+          type: integer
+          minimum: 0
+        beacon_version:
+          type: string
+        clock_skew_seconds:
+          type: number
+        queue_depths:
+          type: object
+          additionalProperties:
+            type: integer
+        store_size_bytes:
+          type: integer
+          minimum: 0
+        evictions_total:
+          type: object
+          additionalProperties:
+            type: integer
+        replay_lag_seconds:
+          type: number
+          minimum: 0
+        device_latency_probes:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/DeviceLatencyProbe'
+        pending_config_hash:
+          type: string
+          nullable: true
+
+    # ---- Cert lifecycle ----
+
+    CertStatusResponse:
+      type: object
+      required: [valid, recommended_action, expires_at, days_until_expiry]
+      properties:
+        valid:
+          type: boolean
+        revocation_reason:
+          type: string
+          nullable: true
+        recommended_action:
+          type: string
+          enum: [rotate, none]
+        expires_at:
+          type: string
+          format: date-time
+        days_until_expiry:
+          type: integer
+
+    CertRotateRequest:
+      type: object
+      required: [csr_pem]
+      properties:
+        csr_pem:
+          type: string
+
+    CertRotateResponse:
+      type: object
+      required: [client_cert_pem, ca_cert_pem, valid_from, valid_until, grace_period_hours]
+      properties:
+        client_cert_pem:
+          type: string
+        ca_cert_pem:
+          type: string
+        valid_from:
+          type: string
+          format: date-time
+        valid_until:
+          type: string
+          format: date-time
+        grace_period_hours:
+          type: integer
+          default: 24
+
+    # ---- Encrypted envelope (data plane) ----
+
+    EncryptedEnvelope:
+      type: string
+      format: binary
+      description: |
+        AES-256-GCM-encrypted blob per ADR-068. Byte layout:
+
+        ```
+        +-1B-+-1B-+-12B-+--N--+-16B-+
+        | 01 | dv | iv  | ct  | tag |
+        +----+----+-----+-----+-----+
+        ```
+
+        - byte 0: protocol version (`0x01`)
+        - byte 1: DEK version (matches `data_key_version` in `beacon_registrations`)
+        - bytes 2–13: 96-bit random IV (never reused with the same key)
+        - bytes 14..(N-16): ciphertext
+        - last 16 bytes: GCM auth tag
+
+        AAD = Idempotency-Key UUIDv5 || data_key_version byte.
+        Plaintext content type is advertised in the request `Content-Type` header
+        (gzip-NDJSON for logs, JSON for SNMP/configs, raw nfcapd for flows).
+
+  # -------------------------------------------------------------------------
+  # Reusable responses
+  # -------------------------------------------------------------------------
+  responses:
+
+    BeaconUrlCertMismatch:
+      description: >
+        URL path beacon_id does not match the cert-derived beacon_id.
+        Returned on every mTLS-authed endpoint where the URL carries `{beacon_id}`.
+        A beacon authenticated as A cannot operate on resources belonging to B.
+        See ADR-067 §"Authorization invariants" (H-2 hardening).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: BEACON_URL_CERT_MISMATCH
+              message: URL beacon_id does not match the certificate identity.
+
+    NotFoundOrCrossTenant:
+      description: >
+        Resource not found OR exists in a different tenant.
+        Cross-tenant access intentionally returns 404 rather than 403 to avoid
+        leaking resource existence across tenant boundaries (M-3 hardening).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+
+  # ---- Enrollment management (admin) ----
+
+  /api/v1/beacons/enrollment-tokens:
+    post:
+      operationId: createEnrollmentToken
+      summary: Generate a one-time-use bootstrap token + signed enrollment bundle.
+      tags: [beacon-enrollment]
+      security:
+        - bearerJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnrollmentTokenCreate'
+      responses:
+        '201':
+          description: Token generated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollmentTokenResponse'
+        '401':
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Caller is not an admin.
+        '429':
+          description: Rate limit exceeded (10/hour per tenant).
+
+    get:
+      operationId: listEnrollmentTokens
+      summary: List active (unused, unexpired) enrollment tokens for the caller's tenant.
+      tags: [beacon-enrollment]
+      security:
+        - bearerJwt: []
+      responses:
+        '200':
+          description: Token list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EnrollmentTokenListItem'
+
+  /api/v1/beacons/enrollment-tokens/{token_id}:
+    delete:
+      operationId: revokeEnrollmentToken
+      summary: Revoke an unused enrollment token.
+      tags: [beacon-enrollment]
+      security:
+        - bearerJwt: []
+      parameters:
+        - name: token_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Revoked.
+        '404':
+          $ref: '#/components/responses/NotFoundOrCrossTenant'
+
+  # ---- Enrollment ceremony (bootstrap-token-authed) ----
+
+  /api/v1/beacons/enroll:
+    post:
+      operationId: enrollBeacon
+      summary: Submit a CSR with a one-time bootstrap token; receive signed cert + DEK.
+      tags: [beacon-enrollment]
+      security:
+        - bootstrapToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeaconEnrollRequest'
+      responses:
+        '201':
+          description: Enrolled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BeaconEnrollResponse'
+        '400':
+          description: CSR invalid (non-empty Subject, non-ECDSA key, etc.).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Bootstrap token invalid / expired / already used / revoked.
+        '409':
+          description: Race — token consumed concurrently.
+
+  # ---- Beacon admin ----
+
+  /api/v1/beacons:
+    get:
+      operationId: listBeacons
+      summary: List beacons for the caller's tenant.
+      tags: [beacon-admin]
+      security:
+        - bearerJwt: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Beacon list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BeaconListResponse'
+
+  /api/v1/beacons/{beacon_id}:
+    parameters:
+      - name: beacon_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getBeacon
+      summary: Get beacon detail.
+      tags: [beacon-admin]
+      security:
+        - bearerJwt: []
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BeaconStatus'
+        '404':
+          $ref: '#/components/responses/NotFoundOrCrossTenant'
+    delete:
+      operationId: revokeBeacon
+      summary: Revoke (logically delete) a beacon.
+      tags: [beacon-admin]
+      security:
+        - bearerJwt: []
+      responses:
+        '204':
+          description: Revoked.
+        '404':
+          $ref: '#/components/responses/NotFoundOrCrossTenant'
+
+  /api/v1/beacons/{beacon_id}/config:
+    parameters:
+      - name: beacon_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      operationId: updateBeaconConfig
+      summary: Update a beacon's collector configuration.
+      tags: [beacon-admin]
+      security:
+        - bearerJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeaconConfig'
+      responses:
+        '200':
+          description: Updated; new config_hash returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BeaconConfigResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundOrCrossTenant'
+    get:
+      operationId: pollBeaconConfig
+      summary: Beacon polls for its current config (mTLS).
+      tags: [beacon-control]
+      security:
+        - mTls: []
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Last-known config_hash. If matches current, returns 304.
+      responses:
+        '200':
+          description: Config returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BeaconConfigResponse'
+          headers:
+            X-Beacon-DataKey-Signature:
+              schema:
+                type: string
+              description: >
+                Present only when this response delivers a rotated DEK. Base64-encoded
+                ed25519 signature over `{data_key_b64, data_key_version, beacon_id, issued_at}`,
+                signed with the platform enrollment-bundle private key. Beacon MUST
+                verify against its baked-in pubkey before accepting the new key
+                (per ADR-068 §"Rotation flow", M-11).
+        '304':
+          description: Not modified — current config matches `If-None-Match`.
+        '403':
+          $ref: '#/components/responses/BeaconUrlCertMismatch'
+        '429':
+          description: Rate limit. Includes `Retry-After` header.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+
+  /api/v1/beacons/{beacon_id}/rotate-key:
+    parameters:
+      - name: beacon_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: rotateBeaconDataKey
+      summary: Rotate the beacon's per-install DEK; old key valid for 7 days.
+      tags: [beacon-admin]
+      security:
+        - bearerJwt: []
+      responses:
+        '202':
+          description: Rotation queued; beacon will receive new key on next config poll.
+        '404':
+          $ref: '#/components/responses/NotFoundOrCrossTenant'
+
+  /api/v1/beacons/{beacon_id}/heartbeat:
+    parameters:
+      - name: beacon_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: postBeaconHeartbeat
+      summary: Beacon liveness + dedup-signal heartbeat.
+      tags: [beacon-control]
+      security:
+        - mTls: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeaconHeartbeatRequest'
+      responses:
+        '204':
+          description: Recorded.
+        '403':
+          $ref: '#/components/responses/BeaconUrlCertMismatch'
+
+  /api/v1/beacons/{beacon_id}/cert-status:
+    parameters:
+      - name: beacon_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getCertStatus
+      summary: Beacon polls its current cert status (validity / revocation / rotation hint).
+      tags: [beacon-control]
+      security:
+        - mTls: []
+      responses:
+        '200':
+          description: Status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CertStatusResponse'
+        '403':
+          $ref: '#/components/responses/BeaconUrlCertMismatch'
+
+  /api/v1/beacons/{beacon_id}/cert/rotate:
+    parameters:
+      - name: beacon_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: rotateBeaconCert
+      summary: Beacon submits a new CSR (mTLS-authed with current cert); receives new cert.
+      tags: [beacon-control]
+      security:
+        - mTls: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CertRotateRequest'
+      responses:
+        '201':
+          description: New cert issued; old cert valid for 24h grace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CertRotateResponse'
+        '403':
+          $ref: '#/components/responses/BeaconUrlCertMismatch'
+
+  # ---- Data push (mTLS, encrypted) ----
+
+  /api/v1/beacons/{beacon_id}/data/logs:
+    parameters:
+      - name: beacon_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: UUIDv5 of `(beacon_id || sha256(plaintext_payload))`.
+      - name: X-Beacon-DEK-Version
+        in: header
+        required: true
+        schema:
+          type: integer
+        description: DEK version used for encryption (matches byte 1 of the body).
+    post:
+      operationId: pushBeaconLogs
+      summary: Push gzip-NDJSON log batch (Loki-compatible), AES-256-GCM-encrypted.
+      tags: [beacon-data]
+      security:
+        - mTls: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              $ref: '#/components/schemas/EncryptedEnvelope'
+      responses:
+        '204':
+          description: Forwarded to Loki successfully.
+        '400':
+          description: >
+            `BEACON_IDEMPOTENCY_KEY_MISMATCH` (server-derived UUIDv5 ≠ header) OR
+            `BEACON_DECOMPRESSION_BOMB` (plaintext exceeds 50 MB cap).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/BeaconUrlCertMismatch'
+        '409':
+          description: Idempotency-Key already received in last 7d (treat as success).
+        '413':
+          description: Encrypted body exceeds 5 MB limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleError'
+        '429':
+          description: Rate limit. Honour `Retry-After`.
+
+  /api/v1/beacons/{beacon_id}/data/flows:
+    parameters:
+      - name: beacon_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: X-Beacon-DEK-Version
+        in: header
+        required: true
+        schema:
+          type: integer
+    post:
+      operationId: pushBeaconFlows
+      summary: Push raw nfcapd files as multipart, AES-256-GCM-encrypted per part.
+      tags: [beacon-data]
+      security:
+        - mTls: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                    description: >
+                      AES-256-GCM-encrypted nfcapd file (per-part envelope per ADR-068).
+                      Each part's `Content-Disposition` filename MUST match the regex
+                      `^flows-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.nfcapd$`
+                      (UUID-prefixed). Server rejects 400 on filename pattern mismatch
+                      (defence against path-traversal regressions — M-12).
+      responses:
+        '204':
+          description: Forwarded to netflow-mcp successfully.
+        '400':
+          description: >
+            `BEACON_IDEMPOTENCY_KEY_MISMATCH`, `BEACON_FILENAME_PATTERN`, or
+            `BEACON_BAD_CONTENT_TYPE`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/BeaconUrlCertMismatch'
+        '409':
+          description: Idempotency-Key already received.
+        '413':
+          description: Total > 50 MB or per-part > 5 MB.
+
+  /api/v1/beacons/{beacon_id}/data/configs:
+    parameters:
+      - name: beacon_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: X-Beacon-DEK-Version
+        in: header
+        required: true
+        schema:
+          type: integer
+    post:
+      operationId: pushBeaconConfigs
+      summary: Push a single device config (JSON, AES-256-GCM-encrypted).
+      tags: [beacon-data]
+      security:
+        - mTls: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              $ref: '#/components/schemas/EncryptedEnvelope'
+      responses:
+        '204':
+          description: Stored.
+        '400':
+          description: >
+            `BEACON_IDEMPOTENCY_KEY_MISMATCH` or `BEACON_DECOMPRESSION_BOMB`
+            (plaintext > 20 MB).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/BeaconUrlCertMismatch'
+        '409':
+          description: Idempotency-Key already received.
+        '413':
+          description: Encrypted body exceeds 2 MB limit.
+
+  /api/v1/beacons/{beacon_id}/data/snmp:
+    parameters:
+      - name: beacon_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: X-Beacon-DEK-Version
+        in: header
+        required: true
+        schema:
+          type: integer
+    post:
+      operationId: pushBeaconSnmp
+      summary: Push SNMP records (JSON, AES-256-GCM-encrypted).
+      tags: [beacon-data]
+      security:
+        - mTls: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              $ref: '#/components/schemas/EncryptedEnvelope'
+      responses:
+        '204':
+          description: Stored.
+        '400':
+          description: >
+            `BEACON_IDEMPOTENCY_KEY_MISMATCH` or `BEACON_DECOMPRESSION_BOMB`
+            (plaintext > 20 MB).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/BeaconUrlCertMismatch'
+        '409':
+          description: Idempotency-Key already received.
+        '413':
+          description: Encrypted body exceeds 2 MB limit.

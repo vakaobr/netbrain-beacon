@@ -1,0 +1,26 @@
+# oapi-codegen v2 config for the beacon-side client.
+#
+# Pinned generator version: v2.5.0. Bumping requires regenerating
+# zz_generated.go and verifying every dependent package still compiles
+# (the generated client signature is the load-bearing API for
+# internal/transport).
+#
+# The spec is OpenAPI 3.1; v2.5.0 emits a warning but generates correct
+# code for our endpoint shapes. If a future spec change introduces a
+# 3.1-only construct (oneOf/anyOf with const, dynamicRef, etc.) that
+# v2.5.0 cannot handle, switch to an Overlay shim per
+# https://www.jvt.me/posts/2025/05/04/oapi-codegen-trick-openapi-3-1/.
+
+package: api
+
+generate:
+  models: true
+  client: true
+  # embedded-spec disabled — we don't ship the YAML inside the binary
+  # (the spec lives in the netbrain repo; beacon's contract is whatever
+  # was generated at build time).
+  embedded-spec: false
+
+# Output to zz_generated.go — the zz_ prefix sorts it last in directory
+# listings and signals "do not edit by hand" to reviewers.
+output: zz_generated.go

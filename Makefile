@@ -65,10 +65,17 @@ govulncheck: ## Scan for known vulnerable Go dependencies
 tidy: ## go mod tidy
 	$(GO_RUN_BUILD) go mod tidy
 
+OAPI_VERSION   := v2.5.0
+NETBRAIN_SPEC  := ../netbrain/services/api-gateway/openapi/beacon-v1.yaml
+
 .PHONY: generate
-generate: ## Regenerate OpenAPI client (Phase 4)
-	@echo "TODO Phase 4: oapi-codegen against ../netbrain/services/api-gateway/openapi/beacon-v1.yaml"
-	@exit 1
+generate: ## Regenerate the OpenAPI client (internal/api/zz_generated.go)
+	@test -f "$(NETBRAIN_SPEC)" || (echo "ERROR: spec not found at $(NETBRAIN_SPEC)"; exit 1)
+	cp "$(NETBRAIN_SPEC)" internal/api/beacon-v1.yaml
+	$(DOCKER_RUN) -e CGO_ENABLED=0 $(GO_IMAGE_BUILD) sh -c '\
+		go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_VERSION) && \
+		cd internal/api && /go/bin/oapi-codegen -config api-config.yaml beacon-v1.yaml'
+	@echo "regenerated internal/api/zz_generated.go from $(NETBRAIN_SPEC)"
 
 .PHONY: clean
 clean: ## Remove build output

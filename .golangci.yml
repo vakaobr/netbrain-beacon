@@ -92,11 +92,14 @@ linters:
         linters:
           - forbidigo
       # io.ReadAll allowed in tests where the input size is controlled by the test author.
+      # bodyclose can't trace cleanup through helper functions that register body.Close()
+      # via t.Cleanup — accepted for test-only code (see resp() in errors_test.go).
       - path: '_test\.go'
         linters:
           - forbidigo
           - errcheck
           - gosec
+          - bodyclose
 
 formatters:
   enable:
