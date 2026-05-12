@@ -10,6 +10,9 @@ permissions:
 
 env:
   GO_VERSION: "1.26.3"
+  # Opt into Node.js 24 runtime for JS actions ahead of June 2026 deprecation
+  # (actions/checkout, actions/setup-go, golangci-lint-action).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   lint:
