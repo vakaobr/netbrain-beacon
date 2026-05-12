@@ -10,21 +10,18 @@ permissions:
 
 env:
   GO_VERSION: "1.26.3"
-  # Opt into Node.js 24 runtime for JS actions ahead of June 2026 deprecation
-  # (actions/checkout, actions/setup-go, golangci-lint-action).
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   lint:
     name: Lint (golangci-lint v2)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      - uses: golangci/golangci-lint-action@v7
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
 
@@ -36,8 +33,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -46,7 +43,7 @@ jobs:
         run: go test -race -coverprofile=coverage.txt -covermode=atomic ./...
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage.txt
@@ -66,8 +63,8 @@ jobs:
             ext: ".exe"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -84,7 +81,7 @@ jobs:
             -o "bin/netbrain-beacon-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" \
             ./cmd/netbrain-beacon
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: netbrain-beacon-${{ matrix.goos }}-${{ matrix.goarch }}
           path: bin/
@@ -94,8 +91,8 @@ jobs:
     name: Vulnerability scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
