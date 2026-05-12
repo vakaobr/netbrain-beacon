@@ -11,6 +11,49 @@ attaches checksummed Linux/macOS/Windows binaries plus .deb / .rpm packages.
 
 ---
 
+## [v0.1.0-rc.2] — 2026-05-12
+
+**Distribution-only release.** The beacon binary is byte-equivalent to
+v0.1.0-rc.1; this tag exists to validate the upgraded release pipeline
+end-to-end (.deb / .rpm / arm64 / macOS / multi-arch Docker / structured
+notes) and to make those artifacts available to dogfood hosts that need
+them. Operators already running rc.1 do **not** need to upgrade.
+
+### Distribution
+
+- **NEW: `.deb` + `.rpm` packages** for linux/amd64 + linux/arm64, built
+  via `nfpm v2.40`. Each package includes the systemd unit, a `netbrain-
+  beacon` system user (created by the pre-install hook), and a non-
+  destructive remove path (`apt remove` preserves `/var/lib/netbrain-
+  beacon` so enrollment survives reinstalls; `apt purge` for full wipe).
+- **NEW: linux/arm64 native binary + tarball + package**. Unlocks ARM
+  customer hardware (AWS Graviton, RPi-class edge boxes, ARM-based
+  on-prem appliances).
+- **NEW: darwin/amd64 + darwin/arm64 tarballs**. macOS Intel + Apple
+  Silicon, single static binary. Operator-installed via tarball; a `.pkg`
+  installer can come in a future release if there's demand.
+- **NEW: multi-arch Docker image** (`linux/amd64,linux/arm64`) at
+  `ghcr.io/vakaobr/netbrain-beacon`. Same `:rc` / `:stable` / version
+  channel pointers as before.
+- **NEW: Windows .zip** wrapping `netbrain-beacon.exe` with README +
+  CHANGELOG (was a bare .exe in rc.1).
+
+### Internal
+
+- Release workflow: 6 jobs (binaries × 5 platforms, tarballs × 4 unix,
+  windows-zip, linux-packages × 2 archs, multi-arch docker, release).
+- Release notes are now extracted from this CHANGELOG.md section plus
+  the commit list since the prior tag — structured for operators
+  evaluating the upgrade rather than a raw commit dump.
+
+### Same as rc.1
+
+All beacon-side functionality (binary, security mandates, observability,
+collectors, store-and-forward, mTLS transport, cert rotation) is identical
+to rc.1 — see the v0.1.0-rc.1 section below.
+
+---
+
 ## [v0.1.0-rc.1] — 2026-05-12
 
 First release candidate. **Pre-release** — Stage 0 dogfood per
