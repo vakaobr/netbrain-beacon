@@ -110,16 +110,16 @@ type envelope struct {
 // is upstream of this table. Whenever a PR over there adds, renames, or
 // removes a beacon error code, a coordinated PR in THIS repo MUST:
 //
-//   1. Update codeActions below — pick the Action that matches the code's
-//      semantics (Retry for transient, DropAndAlert for "your payload is
-//      bad", FatalReenroll for "your identity is broken", etc.). Adding a
-//      new Action constant requires a separate PR and an ADR update.
-//   2. Add a test case to errors_test.go demonstrating Classify dispatches
-//      the new code to the chosen Action. The map-vs-KnownCodes consistency
-//      test (TestAllServerCodesHaveAction) only catches the WRONG case —
-//      a real round-trip test catches handler-wiring regressions.
-//   3. Cite the platform PR + OpenAPI version in the PR description so the
-//      audit trail crosses repos.
+//  1. Update codeActions below — pick the Action that matches the code's
+//     semantics (Retry for transient, DropAndAlert for "your payload is
+//     bad", FatalReenroll for "your identity is broken", etc.). Adding a
+//     new Action constant requires a separate PR and an ADR update.
+//  2. Add a test case to errors_test.go demonstrating Classify dispatches
+//     the new code to the chosen Action. The map-vs-KnownCodes consistency
+//     test (TestAllServerCodesHaveAction) only catches the WRONG case —
+//     a real round-trip test catches handler-wiring regressions.
+//  3. Cite the platform PR + OpenAPI version in the PR description so the
+//     audit trail crosses repos.
 //
 // If you ship a platform release with a new code but skip this PR, the
 // beacon will halt the affected collector on first encounter (Classify's

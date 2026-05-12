@@ -193,7 +193,7 @@ func TestTCPLineCapDropsOversizedLine(t *testing.T) {
 	// by a newline that the scanner would never reach if buffer growth
 	// were unbounded. We send it as ONE write so the scanner sees the
 	// overrun before any newline.
-	payload := make([]byte, 200)
+	payload := make([]byte, 200, 201)
 	for i := range payload {
 		payload[i] = 'A'
 	}
@@ -331,5 +331,7 @@ func (p *panickyPutter) Put(bucket store.Bucket, payload []byte) ([]byte, error)
 // --- helpers ---
 
 // Ensure imports stay live (used elsewhere; this is belt-and-braces).
-var _ = filepath.Join
-var _ = fmt.Sprintf
+var (
+	_ = filepath.Join
+	_ = fmt.Sprintf
+)

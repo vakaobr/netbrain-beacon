@@ -109,14 +109,14 @@ type Server struct {
 
 	// Counters surfaced via Stats(); reset never (cumulative for the
 	// daemon's lifetime).
-	rxTotal         atomic.Int64
-	parseFails      atomic.Int64
-	droppedFull     atomic.Int64
-	persisted       atomic.Int64
-	persistFail     atomic.Int64
-	oversizedDrop   atomic.Int64 // SY-1: TCP lines past MaxLineBytes
-	connsRejected   atomic.Int64 // SY-2: TCP accepts past MaxTCPConnections
-	workerPanics    atomic.Int64 // SY-3: panics recovered in worker
+	rxTotal       atomic.Int64
+	parseFails    atomic.Int64
+	droppedFull   atomic.Int64
+	persisted     atomic.Int64
+	persistFail   atomic.Int64
+	oversizedDrop atomic.Int64 // SY-1: TCP lines past MaxLineBytes
+	connsRejected atomic.Int64 // SY-2: TCP accepts past MaxTCPConnections
+	workerPanics  atomic.Int64 // SY-3: panics recovered in worker
 }
 
 // Errors surfaced by NewServer / Start.
@@ -529,14 +529,6 @@ type baseFields struct {
 	Message  *string
 	Severity *uint8
 	Facility *uint8
-}
-
-// trimNewline strips a single trailing \n or \r\n.
-func trimNewline(b []byte) []byte {
-	for len(b) > 0 && (b[len(b)-1] == '\n' || b[len(b)-1] == '\r') {
-		b = b[:len(b)-1]
-	}
-	return b
 }
 
 func isClosed(err error) bool {

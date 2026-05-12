@@ -450,8 +450,8 @@ func TestCountTracksMetaRecordsCounter(t *testing.T) {
 
 	// Put 5, expect Count == 5.
 	for i := 0; i < 5; i++ {
-		_, err := s.Put(BucketFlows, []byte{byte(i)})
-		require.NoError(t, err)
+		_, perr := s.Put(BucketFlows, []byte{byte(i)})
+		require.NoError(t, perr)
 	}
 	n, err = s.Count(BucketFlows)
 	require.NoError(t, err)
