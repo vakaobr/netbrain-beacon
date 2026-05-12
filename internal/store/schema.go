@@ -117,8 +117,9 @@ func metaKey(prefix string, b Bucket) []byte {
 
 // Meta-key prefixes.
 const (
-	metaPrefixBytes  = "bytes"
-	metaPrefixCursor = "cursor"
+	metaPrefixBytes   = "bytes"
+	metaPrefixCursor  = "cursor"
+	metaPrefixRecords = "records"
 )
 
 // metaEvictLastKey is the single timestamp-tracking key in meta.

@@ -27,6 +27,29 @@ func addBytes(tx *bbolt.Tx, bucket Bucket, delta int64) error {
 	return mb.Put(key, encodeUint64(uint64(next))) //nolint:gosec
 }
 
+// addRecords increments the records:<bucket> counter in meta by delta
+// (which may be negative). Same clamp-to-zero behavior as addBytes —
+// keeps Count() honest even if a tx-pair drifts.
+//
+// Tracked separately from byte totals because b.Stats().KeyN is O(N)
+// in bbolt (full bucket scan) and the research doc (ADR-078 finding #4923)
+// flags it as panic-prone on freelist-stressed databases.
+//
+// Called from inside an existing bbolt write transaction.
+func addRecords(tx *bbolt.Tx, bucket Bucket, delta int64) error {
+	mb := tx.Bucket([]byte(metaBucket))
+	if mb == nil {
+		return errors.New("addRecords: meta bucket missing")
+	}
+	key := metaKey(metaPrefixRecords, bucket)
+	current := int64(decodeUint64(mb.Get(key))) //nolint:gosec
+	next := current + delta
+	if next < 0 {
+		next = 0
+	}
+	return mb.Put(key, encodeUint64(uint64(next))) //nolint:gosec
+}
+
 // setCursor writes the cursor:<bucket> meta key to value. value is the
 // most-recently-attempted record key — replay resumes from "value
 // excluded", i.e. the next key after value in FIFO order.

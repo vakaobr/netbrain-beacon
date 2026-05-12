@@ -92,6 +92,9 @@ func (s *Store) EvictIfNeeded(now time.Time) (EvictionResult, error) {
 				if err := addBytes(tx, b, -size); err != nil {
 					return err
 				}
+				if err := addRecords(tx, b, -1); err != nil {
+					return err
+				}
 				stat := result.ByBucket[b]
 				stat.Records++
 				stat.Bytes += size

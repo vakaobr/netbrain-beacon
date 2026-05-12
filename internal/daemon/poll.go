@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/secra/netbrain-beacon/internal/api"
-	"github.com/secra/netbrain-beacon/internal/metrics"
+	"github.com/velonet/netbrain-beacon/internal/api"
+	"github.com/velonet/netbrain-beacon/internal/metrics"
 )
 
 // PollResult is the outcome of one poll cycle. Returned for tests +
@@ -102,11 +102,31 @@ func (d *Daemon) pollOnce(ctx context.Context) (PollResult, error) {
 
 		// DEK rotation signature: if header is present, verify it. M-11
 		// fail-closed.
+		//
+		// IMPORTANT — payload contract (F-4 verified 2026-05-12):
+		//
+		// The platform's `_build_dek_signature_header` in
+		// netbrain/services/api-gateway/src/routes/beacons.py currently
+		// signs `data_key_b64=""` (line 1242). This is intentional: the
+		// GET /config endpoint does NOT deliver rotated DEK material in
+		// its body today — the DEK is only transmitted ONCE during the
+		// enrollment ceremony. The X-Beacon-DataKey-Signature header on
+		// /config responses is therefore a "DEK version assertion" — the
+		// platform vouches for the version, not for a new key value.
+		//
+		// When the platform wires a real rotation channel that returns
+		// `data_key_b64` in the response body, BOTH sides must change
+		// in the same PR:
+		//   1. Platform: pass the real base64 string at beacons.py:1242.
+		//   2. Beacon: parse `parsed.DataKeyB64` and pass it below
+		//      instead of the empty string.
+		// CONTRIBUTING.md "Shipping a wire-format change" mandates a
+		// feature flag for this transition.
 		if sig := resp.Header.Get("X-Beacon-DataKey-Signature"); sig != "" {
 			res.DEKSignaturePresent = true
 			verr := verifyDEKRotationSignature(resp.Header, d.PlatformPubKey.Key, dekRotationPayload{
 				BeaconID:       d.Identity.ID.String(),
-				DataKeyB64:     "",
+				DataKeyB64:     "", // see comment above; must match platform's _build_dek_signature_header(data_key_b64=...) exactly.
 				DataKeyVersion: d.State.DEKVersion(),
 				IssuedAt:       resp.Header.Get("Date"),
 			})

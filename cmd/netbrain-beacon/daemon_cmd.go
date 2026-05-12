@@ -15,20 +15,20 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/secra/netbrain-beacon/internal/admin/cli"
-	"github.com/secra/netbrain-beacon/internal/api"
-	"github.com/secra/netbrain-beacon/internal/collectors"
-	"github.com/secra/netbrain-beacon/internal/collectors/configs"
-	"github.com/secra/netbrain-beacon/internal/collectors/netflow"
-	"github.com/secra/netbrain-beacon/internal/collectors/sender"
-	"github.com/secra/netbrain-beacon/internal/collectors/snmp"
-	bcrypto "github.com/secra/netbrain-beacon/internal/crypto"
-	"github.com/secra/netbrain-beacon/internal/daemon"
-	"github.com/secra/netbrain-beacon/internal/enroll"
-	beaconlog "github.com/secra/netbrain-beacon/internal/log"
-	"github.com/secra/netbrain-beacon/internal/metrics"
-	"github.com/secra/netbrain-beacon/internal/store"
-	"github.com/secra/netbrain-beacon/internal/transport"
+	"github.com/velonet/netbrain-beacon/internal/admin/cli"
+	"github.com/velonet/netbrain-beacon/internal/api"
+	"github.com/velonet/netbrain-beacon/internal/collectors"
+	"github.com/velonet/netbrain-beacon/internal/collectors/configs"
+	"github.com/velonet/netbrain-beacon/internal/collectors/netflow"
+	"github.com/velonet/netbrain-beacon/internal/collectors/sender"
+	"github.com/velonet/netbrain-beacon/internal/collectors/snmp"
+	bcrypto "github.com/velonet/netbrain-beacon/internal/crypto"
+	"github.com/velonet/netbrain-beacon/internal/daemon"
+	"github.com/velonet/netbrain-beacon/internal/enroll"
+	beaconlog "github.com/velonet/netbrain-beacon/internal/log"
+	"github.com/velonet/netbrain-beacon/internal/metrics"
+	"github.com/velonet/netbrain-beacon/internal/store"
+	"github.com/velonet/netbrain-beacon/internal/transport"
 )
 
 // runDaemon implements the `netbrain-beacon daemon` subcommand — the
@@ -326,7 +326,12 @@ func runLogs(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "logs: --path is required (the daemon writes to stderr by default; configure file output in your service manager)")
 		return 2
 	}
-	if err := cli.Tail(stdout, cli.TailOptions{
+	// Wire SIGINT/SIGTERM into Tail's ctx so --follow returns cleanly
+	// when the operator hits Ctrl-C instead of slamming the process.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if err := cli.Tail(ctx, stdout, cli.TailOptions{
 		Path:     *logPath,
 		Follow:   *follow,
 		MaxLines: *maxLines,

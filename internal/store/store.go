@@ -167,7 +167,10 @@ func (s *Store) Put(bucket Bucket, payload []byte) ([]byte, error) {
 		if err := b.Put(key, value); err != nil {
 			return err
 		}
-		return addBytes(tx, bucket, int64(len(value)))
+		if err := addBytes(tx, bucket, int64(len(value))); err != nil {
+			return err
+		}
+		return addRecords(tx, bucket, 1)
 	}); err != nil {
 		return nil, err
 	}
@@ -247,12 +250,17 @@ func (s *Store) Delete(bucket Bucket, key []byte) error {
 		if err := b.Delete(key); err != nil {
 			return err
 		}
-		return addBytes(tx, bucket, -size)
+		if err := addBytes(tx, bucket, -size); err != nil {
+			return err
+		}
+		return addRecords(tx, bucket, -1)
 	})
 }
 
-// Count returns the number of records currently in bucket. O(1) — uses
-// bbolt's internal counter, NOT a full scan.
+// Count returns the number of records currently in bucket. O(1) — reads
+// the records:<bucket> meta counter maintained by Put/Delete/Replay/Evict.
+// Does NOT call bbolt's b.Stats() which research finding ADR-078 #4923
+// flags as panic-prone under freelist stress.
 func (s *Store) Count(bucket Bucket) (int, error) {
 	if s.closed.Load() {
 		return 0, ErrClosed
@@ -262,11 +270,11 @@ func (s *Store) Count(bucket Bucket) (int, error) {
 	}
 	var n int
 	err := s.db.View(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(bucket))
-		if b == nil {
+		mb := tx.Bucket([]byte(metaBucket))
+		if mb == nil {
 			return nil
 		}
-		n = b.Stats().KeyN
+		n = int(decodeUint64(mb.Get(metaKey(metaPrefixRecords, bucket)))) //nolint:gosec // bucket count <= MaxBytes/min-record ~ never overflows int
 		return nil
 	})
 	return n, err

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/bbolt"
 )
 
 func openStore(t *testing.T) *Store {
@@ -433,4 +434,105 @@ func TestPropertyByteTotalExact(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, shadow, bytesNow,
 		"meta:bytes:%s drifted from shadow total over 1000 random ops", BucketLogs)
+}
+
+// TestCountTracksMetaRecordsCounter verifies that Count() reads the
+// records:<bucket> meta counter (not bbolt.Stats) and that the counter
+// stays exact under Put + Delete + Replay + Evict — the four code paths
+// that mutate bucket size.
+func TestCountTracksMetaRecordsCounter(t *testing.T) {
+	s := openStore(t)
+
+	// Empty bucket — counter should be 0, not panic.
+	n, err := s.Count(BucketFlows)
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+
+	// Put 5, expect Count == 5.
+	for i := 0; i < 5; i++ {
+		_, err := s.Put(BucketFlows, []byte{byte(i)})
+		require.NoError(t, err)
+	}
+	n, err = s.Count(BucketFlows)
+	require.NoError(t, err)
+	require.Equal(t, 5, n)
+
+	// Delete the first record — Count == 4.
+	var firstKey []byte
+	require.NoError(t, s.Iter(BucketFlows, func(k, _ []byte) error {
+		if firstKey == nil {
+			firstKey = append([]byte(nil), k...)
+		}
+		return nil
+	}))
+	require.NotNil(t, firstKey)
+	require.NoError(t, s.Delete(BucketFlows, firstKey))
+	n, err = s.Count(BucketFlows)
+	require.NoError(t, err)
+	require.Equal(t, 4, n)
+
+	// Replay-drain two records — Count == 2.
+	delivered := 0
+	_, err = s.Replay(context.Background(), BucketFlows, func(_ context.Context, _, _ []byte) error {
+		delivered++
+		if delivered >= 2 {
+			return nil // deliver, but next iteration will check MaxRecords
+		}
+		return nil
+	}, ReplayOptions{MaxRecords: 2})
+	require.NoError(t, err)
+	n, err = s.Count(BucketFlows)
+	require.NoError(t, err)
+	require.Equal(t, 2, n)
+
+	// Delete remaining records via key-collection then per-key Delete.
+	// (Doing s.Delete from inside the Iter callback would deadlock —
+	// Iter holds a bbolt read tx; Delete needs a write tx.)
+	var remaining [][]byte
+	require.NoError(t, s.Iter(BucketFlows, func(k, _ []byte) error {
+		remaining = append(remaining, append([]byte(nil), k...))
+		return nil
+	}))
+	for _, k := range remaining {
+		require.NoError(t, s.Delete(BucketFlows, k))
+	}
+	n, err = s.Count(BucketFlows)
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+
+	// Confirm the underlying meta key actually exists and is zero (vs.
+	// "absent and decode-to-zero by coincidence"). Use a write tx with
+	// no-op delete to exercise that the key is in the meta bucket.
+	require.NoError(t, s.db.View(func(tx *bbolt.Tx) error {
+		mb := tx.Bucket([]byte(metaBucket))
+		require.NotNil(t, mb, "meta bucket must exist after Open")
+		raw := mb.Get(metaKey(metaPrefixRecords, BucketFlows))
+		require.NotNil(t, raw, "records:flows meta key must exist after Put/Delete cycle")
+		require.Equal(t, uint64(0), decodeUint64(raw))
+		return nil
+	}))
+}
+
+// TestCountAfterEviction confirms eviction's addRecords(-1) calls keep
+// Count() honest after a cap-trip drains records.
+func TestCountAfterEviction(t *testing.T) {
+	// Tight cap: 4 records of 100 bytes each = 400, evict at 250.
+	s, _ := openStoreWith(t, Options{MaxBytes: 250, MaxAge: 24 * time.Hour})
+
+	for i := 0; i < 4; i++ {
+		_, err := s.Put(BucketFlows, make([]byte, 100))
+		require.NoError(t, err)
+	}
+	preCount, err := s.Count(BucketFlows)
+	require.NoError(t, err)
+	require.Equal(t, 4, preCount)
+
+	res, err := s.EvictIfNeeded(time.Now())
+	require.NoError(t, err)
+	require.Greater(t, res.RecordsEvicted, 0, "eviction must trip with 400 bytes over 250-cap")
+
+	postCount, err := s.Count(BucketFlows)
+	require.NoError(t, err)
+	require.Equal(t, 4-res.RecordsEvicted, postCount,
+		"Count() must reflect records evicted; got %d, expected %d", postCount, 4-res.RecordsEvicted)
 }

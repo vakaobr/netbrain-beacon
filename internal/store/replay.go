@@ -165,6 +165,9 @@ func (s *Store) commitDelivered(bucket Bucket, key []byte, size int64) error {
 		if err := addBytes(tx, bucket, -size); err != nil {
 			return err
 		}
+		if err := addRecords(tx, bucket, -1); err != nil {
+			return err
+		}
 		return setCursor(tx, bucket, key)
 	})
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -26,18 +27,24 @@ type TailOptions struct {
 	// Level filters by slog level prefix (e.g. "ERROR", "INFO"). Empty
 	// → no filter.
 	Level string
+	// PollInterval is the follow-mode poll cadence. Zero defaults to
+	// 200ms. Exposed for tests that need a tighter loop.
+	PollInterval time.Duration
 }
 
 // Tail prints lines from a slog JSON log file matching the supplied
-// filters. If Follow is true, blocks until the caller signals via the
-// underlying io.Reader closing (typically a context cancel routed
-// through an io.Pipe; for simplicity the CLI wrapper closes its file
-// handle on signal).
+// filters. If Follow is true, blocks until ctx is cancelled.
 //
 // Tail does NOT parse JSON — it just filters on substring matches in
 // the raw lines. This keeps the output forwardable to other tools
 // (jq, less, grep) without re-encoding.
-func Tail(out io.Writer, opts TailOptions) error {
+//
+// Implementation note: uses bufio.Reader (not bufio.Scanner) because
+// Scanner latches an EOF "done" state — once Scan() returns false, the
+// scanner is finished even if the underlying file grows. Reader has no
+// such state and re-reads from the file on each ReadBytes call, which
+// is what `tail -F` requires.
+func Tail(ctx context.Context, out io.Writer, opts TailOptions) error {
 	if opts.Path == "" {
 		return errors.New("cli: log path required")
 	}
@@ -47,56 +54,82 @@ func Tail(out io.Writer, opts TailOptions) error {
 	}
 	defer func() { _ = f.Close() }()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 4096), 1<<20) // 1 MiB max line — log lines shouldn't ever hit this
+	r := bufio.NewReaderSize(f, 64*1024)
 
 	printed := 0
-	for scanner.Scan() {
-		line := scanner.Text()
+	emit := func(line string) bool {
 		if opts.Level != "" && !strings.Contains(strings.ToUpper(line), opts.Level) {
-			continue
+			return false
 		}
 		if opts.Grep != "" && !strings.Contains(strings.ToLower(line), strings.ToLower(opts.Grep)) {
+			return false
+		}
+		_, _ = fmt.Fprintln(out, strings.TrimRight(line, "\r\n"))
+		printed++
+		return opts.MaxLines > 0 && printed >= opts.MaxLines
+	}
+
+	// Initial drain — read every complete line that already exists on
+	// disk. Stops at the first short read (EOF or partial trailing line)
+	// so we hand-off cleanly to the follow-mode poll loop.
+	for {
+		line, err := r.ReadString('\n')
+		if len(line) > 0 && strings.HasSuffix(line, "\n") {
+			if emit(line) {
+				return nil
+			}
 			continue
 		}
-		_, _ = fmt.Fprintln(out, line)
-		printed++
-		if opts.MaxLines > 0 && printed >= opts.MaxLines {
+		// Hit EOF (with or without a partial trailing line that has no
+		// terminator yet). Stop the initial drain — any partial bytes
+		// are buffered in r and ReadString will pick up where it left
+		// off on the next call.
+		if err == io.EOF {
 			break
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("cli: scan: %w", err)
+		if err != nil {
+			return fmt.Errorf("cli: read log: %w", err)
+		}
 	}
 
 	if !opts.Follow {
 		return nil
 	}
 
-	// Follow mode: poll for new bytes every 200ms. Simpler than inotify
-	// + portable across Linux/Windows. Bounded by ctx cancel from the
-	// caller (which closes the file handle to abort the read).
+	// Follow mode: poll with a Ticker, select against ctx.Done() so a
+	// signal-cancel returns nil promptly. Each tick attempts to read
+	// every line that has become available since the last tick.
+	interval := opts.PollInterval
+	if interval == 0 {
+		interval = 200 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
-		time.Sleep(200 * time.Millisecond)
-		moreFound := false
-		for scanner.Scan() {
-			moreFound = true
-			line := scanner.Text()
-			if opts.Level != "" && !strings.Contains(strings.ToUpper(line), opts.Level) {
-				continue
-			}
-			if opts.Grep != "" && !strings.Contains(strings.ToLower(line), strings.ToLower(opts.Grep)) {
-				continue
-			}
-			_, _ = fmt.Fprintln(out, line)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
 		}
-		if !moreFound {
-			if err := scanner.Err(); err != nil {
-				if errors.Is(err, os.ErrClosed) {
+
+		for {
+			line, err := r.ReadString('\n')
+			if len(line) > 0 && strings.HasSuffix(line, "\n") {
+				if emit(line) {
 					return nil
 				}
-				return fmt.Errorf("cli: scan: %w", err)
+				continue
 			}
+			// Either EOF with no further line, or a partial line that
+			// will complete on a later tick. Stop this tick's read
+			// loop — the buffered partial stays inside r.
+			if err == io.EOF || err == nil {
+				break
+			}
+			if errors.Is(err, os.ErrClosed) {
+				return nil
+			}
+			return fmt.Errorf("cli: read log: %w", err)
 		}
 	}
 }
