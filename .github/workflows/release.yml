@@ -1,10 +1,20 @@
 name: Release
 
 # Triggers on tag push (vX.Y.Z, vX.Y.Z-rc.N, etc.). The tag name is the
-# canonical version string baked into the binary via -ldflags. Per the
-# deploy plan (09_DEPLOY_PLAN.md):
-#   - vX.Y.Z-rc.N         → prerelease, Docker tag `rc` + version, NOT `stable`
-#   - vX.Y.Z (no suffix)  → full release, Docker tag `stable` + `latest` + version
+# canonical version string baked into the binary via -ldflags.
+#
+# Channels (per 09_DEPLOY_PLAN.md):
+#   - vX.Y.Z-rc.N         → prerelease, Docker `:rc` + version pointers
+#   - vX.Y.Z (no suffix)  → full release, Docker `:stable` + `:latest` + version pointers
+#
+# Artifacts emitted per release:
+#   - linux/amd64 + linux/arm64        raw binary, .tar.gz, .deb, .rpm
+#   - darwin/amd64 + darwin/arm64      raw binary, .tar.gz   (macOS Intel + Apple Silicon)
+#   - windows/amd64                    raw .exe, .zip
+#   - Multi-arch Docker (linux/amd64 + linux/arm64) on GHCR
+#   - SHA256 checksums file for everything
+#   - Structured release notes (CHANGELOG.md section + commits since prev tag)
+
 on:
   push:
     tags:
@@ -20,22 +30,21 @@ env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/netbrain-beacon
 
 jobs:
-  # ──────────────────────────────────────────────
-  # 1. Build linux/amd64 + windows/amd64 binaries with the tag version baked in.
-  #    Outputs go to artifacts/ and are uploaded for the release step to attach.
-  # ──────────────────────────────────────────────
+  # ══════════════════════════════════════════════════════════════════════
+  # 1. Build native binaries for all 5 platforms.
+  # ══════════════════════════════════════════════════════════════════════
   binaries:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - goos: linux
-            goarch: amd64
-            ext: ""
-          - goos: windows
-            goarch: amd64
-            ext: ".exe"
+          - { goos: linux,   goarch: amd64, ext: ""     }
+          - { goos: linux,   goarch: arm64, ext: ""     }
+          - { goos: windows, goarch: amd64, ext: ".exe" }
+          - { goos: darwin,  goarch: amd64, ext: ""     }
+          - { goos: darwin,  goarch: arm64, ext: ""     }
     steps:
       - uses: actions/checkout@v6
 
@@ -63,8 +72,8 @@ jobs:
           sha256sum "netbrain-beacon-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" \
             > "netbrain-beacon-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.sha256"
 
-      - name: Smoke test the binary (linux only)
-        if: matrix.goos == 'linux'
+      - name: Smoke-test the binary (linux/amd64 only — runner native arch)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: |
           ./artifacts/netbrain-beacon-${{ github.ref_name }}-linux-amd64 version
 
@@ -73,16 +82,194 @@ jobs:
         with:
           name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
           path: artifacts/
-          retention-days: 30   # keep on the workflow until release attaches them
+          retention-days: 30
 
-  # ──────────────────────────────────────────────
-  # 2. Build & push the distroless Docker image to GHCR with version tags.
-  # ──────────────────────────────────────────────
-  docker:
-    name: Push Docker image to GHCR
+  # ══════════════════════════════════════════════════════════════════════
+  # 2. Generate .tar.gz tarballs for linux + darwin (matches homebrew /
+  #    generic-Unix conventions). Each tarball bundles the binary + a
+  #    minimal README + the systemd unit (linux only) so operators can
+  #    install without a package manager.
+  # ══════════════════════════════════════════════════════════════════════
+  tarballs:
+    name: Tarball ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: binaries
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,  goarch: amd64 }
+          - { goos: linux,  goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download binary
+        uses: actions/download-artifact@v8
+        with:
+          name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: src-binary/
+
+      - name: Stage tarball contents
+        run: |
+          STAGE="netbrain-beacon-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p "${STAGE}"
+          cp "src-binary/netbrain-beacon-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}" "${STAGE}/netbrain-beacon"
+          chmod +x "${STAGE}/netbrain-beacon"
+          cp README.md "${STAGE}/README.md"
+          cp CHANGELOG.md "${STAGE}/CHANGELOG.md"
+          if [ "${{ matrix.goos }}" = "linux" ]; then
+            cp packaging/systemd/netbrain-beacon.service "${STAGE}/netbrain-beacon.service"
+          fi
+
+      - name: Tar + gzip + checksum
+        run: |
+          STAGE="netbrain-beacon-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p dist
+          tar -czf "dist/${STAGE}.tar.gz" "${STAGE}"
+          cd dist
+          sha256sum "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: tarball-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          retention-days: 30
+
+  # ══════════════════════════════════════════════════════════════════════
+  # 3. Generate .zip for Windows (matches the convention; .exe alone is
+  #    less convenient for operators to download + verify).
+  # ══════════════════════════════════════════════════════════════════════
+  windows-zip:
+    name: Zip Windows binary
+    needs: binaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
+      - name: Download binary
+        uses: actions/download-artifact@v8
+        with:
+          name: binary-windows-amd64
+          path: src-binary/
+
+      - name: Stage zip contents
+        run: |
+          STAGE="netbrain-beacon-${{ github.ref_name }}-windows-amd64"
+          mkdir -p "${STAGE}"
+          cp "src-binary/netbrain-beacon-${{ github.ref_name }}-windows-amd64.exe" "${STAGE}/netbrain-beacon.exe"
+          cp README.md "${STAGE}/README.md"
+          cp CHANGELOG.md "${STAGE}/CHANGELOG.md"
+
+      - name: Zip + checksum
+        run: |
+          STAGE="netbrain-beacon-${{ github.ref_name }}-windows-amd64"
+          mkdir -p dist
+          zip -r "dist/${STAGE}.zip" "${STAGE}"
+          cd dist
+          sha256sum "${STAGE}.zip" > "${STAGE}.zip.sha256"
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: zip-windows-amd64
+          path: dist/
+          retention-days: 30
+
+  # ══════════════════════════════════════════════════════════════════════
+  # 4. Generate .deb + .rpm packages for linux/amd64 + linux/arm64 via nfpm.
+  #    nfpm is a static Go binary — no fpm/ruby dependency. The packaging/
+  #    scripts/{preinstall,postinstall,preremove,postremove}.sh hooks manage
+  #    the netbrain-beacon system user + systemd unit lifecycle.
+  # ══════════════════════════════════════════════════════════════════════
+  linux-packages:
+    name: Build .deb + .rpm (${{ matrix.arch }})
+    needs: binaries
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download linux binary
+        uses: actions/download-artifact@v8
+        with:
+          name: binary-linux-${{ matrix.arch }}
+          path: src-binary/
+
+      - name: Stage binary at the path nfpm expects
+        run: |
+          mkdir -p dist
+          # nfpm.yaml hardcodes src to ./dist/netbrain-beacon (no arch suffix);
+          # this job builds one arch at a time so the unsuffixed path is unique.
+          cp "src-binary/netbrain-beacon-${{ github.ref_name }}-linux-${{ matrix.arch }}" \
+             "dist/netbrain-beacon"
+          chmod +x "dist/netbrain-beacon"
+          chmod +x packaging/scripts/*.sh
+
+      - name: Install nfpm
+        run: |
+          NFPM_VERSION="2.40.0"
+          curl -fsSL -o /tmp/nfpm.tar.gz \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          tar -xzf /tmp/nfpm.tar.gz -C /tmp nfpm
+          sudo install -m 0755 /tmp/nfpm /usr/local/bin/nfpm
+          nfpm --version
+
+      - name: Strip leading 'v' from tag (deb/rpm require pure semver)
+        id: version
+        run: |
+          # Tag is e.g. v0.1.0-rc.1 → version 0.1.0-rc.1 for nfpm.
+          # nfpm rejects a leading 'v'.
+          VERSION="${{ github.ref_name }}"
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build .deb
+        env:
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p out
+          nfpm pkg --packager deb --config packaging/nfpm.yaml --target out/
+
+      - name: Build .rpm
+        env:
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p out
+          nfpm pkg --packager rpm --config packaging/nfpm.yaml --target out/
+
+      - name: SHA256 checksums for both packages
+        run: |
+          cd out
+          for f in *.deb *.rpm; do
+            [ -e "$f" ] && sha256sum "$f" > "${f}.sha256"
+          done
+          ls -la
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-packages-${{ matrix.arch }}
+          path: out/
+          retention-days: 30
+
+  # ══════════════════════════════════════════════════════════════════════
+  # 5. Build & push multi-arch (linux/amd64 + linux/arm64) Docker image.
+  # ══════════════════════════════════════════════════════════════════════
+  docker:
+    name: Push Docker image (multi-arch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up QEMU (for arm64 build on amd64 runner)
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -100,22 +287,18 @@ jobs:
         with:
           images: ${{ env.IMAGE }}
           tags: |
-            # Always tag the exact version (e.g. v0.1.0-rc.1)
             type=ref,event=tag
-            # Strip the leading "v" for a semver tag (0.1.0-rc.1)
             type=semver,pattern={{version}}
-            # Major.minor for non-prerelease tags
             type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
-            # `rc` channel pointer for *-rc.* tags (canary cohort installs by this)
             type=raw,value=rc,enable=${{ contains(github.ref_name, '-rc') }}
-            # `stable` + `latest` channel pointers ONLY for non-prerelease tags
             type=raw,value=stable,enable=${{ !contains(github.ref_name, '-') }}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
-      - name: Build and push
+      - name: Build and push (linux/amd64 + linux/arm64)
         uses: docker/build-push-action@v7
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -124,26 +307,22 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ──────────────────────────────────────────────
-  # 3. Create the GitHub Release with binaries + checksums attached.
-  #    Marks prerelease when the tag contains a hyphen (-rc, -beta, etc.).
-  # ──────────────────────────────────────────────
+  # ══════════════════════════════════════════════════════════════════════
+  # 6. Create the GitHub Release with all artifacts + structured notes.
+  # ══════════════════════════════════════════════════════════════════════
   release:
     name: Create GitHub Release
-    needs: [binaries, docker]
+    needs: [binaries, tarballs, windows-zip, linux-packages, docker]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          # Need the prior tag to generate release notes from commits since
-          # the previous release.
-          fetch-depth: 0
+          fetch-depth: 0   # need the prior tag for commit range in notes
 
-      - name: Download all binary artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: binary-*
           merge-multiple: true
 
       - name: List artifacts (sanity)
@@ -153,20 +332,110 @@ jobs:
         id: release_type
         run: |
           if [[ "${{ github.ref_name }}" == *-* ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true"  >> "$GITHUB_OUTPUT"
+            echo "channel=rc"        >> "$GITHUB_OUTPUT"
             echo "Channel: rc / prerelease"
           else
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "channel=stable"   >> "$GITHUB_OUTPUT"
             echo "Channel: stable"
           fi
+
+      - name: Find prior tag
+        id: prior
+        run: |
+          PRIOR=$(git tag --sort=-v:refname | grep -v "^${{ github.ref_name }}$" | head -1 || echo "")
+          echo "tag=${PRIOR}" >> "$GITHUB_OUTPUT"
+          echo "Prior tag: ${PRIOR:-<none, initial release>}"
+
+      - name: Extract CHANGELOG section for this version
+        id: changelog
+        run: |
+          # Pull the section between "## [v0.1.0-rc.1]" (this tag) and the
+          # next "## " header. If the section isn't found, fall back to a
+          # 1-line placeholder; the auto-generated commit list below covers
+          # the diff regardless.
+          TAG="${{ github.ref_name }}"
+          if grep -q "^## \[${TAG}\]" CHANGELOG.md; then
+            awk -v tag="${TAG}" '
+              $0 ~ "^## \\["tag"\\]" { capture=1; next }
+              capture && /^## \[/    { exit }
+              capture                { print }
+            ' CHANGELOG.md > release-notes-section.md
+          else
+            echo "_(no CHANGELOG.md section for ${TAG} — see commit list below)_" > release-notes-section.md
+          fi
+          echo "----- CHANGELOG SECTION -----"
+          cat release-notes-section.md
+
+      - name: Compose release notes
+        run: |
+          TAG="${{ github.ref_name }}"
+          PRIOR="${{ steps.prior.outputs.tag }}"
+          CHANNEL="${{ steps.release_type.outputs.channel }}"
+
+          {
+            echo "# netbrain-beacon ${TAG}"
+            echo ""
+            if [ "${CHANNEL}" = "rc" ]; then
+              echo "> ⚠ **Release candidate** — use only for dogfood / staging. Promote to \`:stable\` after Phase 7b co-pentest passes."
+              echo ""
+            fi
+            cat release-notes-section.md
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Verifying downloads"
+            echo ""
+            echo "Each artifact ships with a \`.sha256\` sidecar."
+            echo ""
+            echo '```bash'
+            echo "# Linux .deb (amd64)"
+            echo "curl -fsSL -O https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/netbrain-beacon_${TAG#v}_amd64.deb"
+            echo "curl -fsSL -O https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/netbrain-beacon_${TAG#v}_amd64.deb.sha256"
+            echo "sha256sum -c netbrain-beacon_${TAG#v}_amd64.deb.sha256"
+            echo '```'
+            echo ""
+            echo "## Docker image"
+            echo ""
+            echo '```bash'
+            echo "docker pull ${IMAGE}:${TAG}      # immutable version pin"
+            echo "docker pull ${IMAGE}:${CHANNEL}  # channel pointer (mutable)"
+            echo '```'
+            echo ""
+            echo "## Compare to previous release"
+            echo ""
+            if [ -n "${PRIOR}" ]; then
+              echo "**Full Changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${PRIOR}...${TAG}"
+              echo ""
+              echo "**Commits since ${PRIOR}:**"
+              echo ""
+              git log --pretty=format:"- %s (%h)" "${PRIOR}..${TAG}" -- . ':!.claude' | head -50
+            else
+              echo "**Initial release** — no prior tag."
+            fi
+          } > release-notes.md
+
+          echo "----- COMPOSED RELEASE NOTES -----"
+          cat release-notes.md
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          IMAGE: ${{ env.IMAGE }}
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          PRERELEASE_FLAG=""
+          if [ "${{ steps.release_type.outputs.prerelease }}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          # Attach all artifacts: raw binaries, tarballs, zips, debs, rpms,
+          # plus their .sha256 sidecars. The artifacts/ directory was
+          # populated by download-artifact with merge-multiple=true so
+          # everything lives flat at the top level.
           gh release create "${{ github.ref_name }}" \
-            artifacts/* \
+            ${PRERELEASE_FLAG} \
             --title "netbrain-beacon ${{ github.ref_name }}" \
-            --generate-notes \
-            ${{ steps.release_type.outputs.prerelease == 'true' && '--prerelease' || '' }} \
-            --notes-start-tag "$(git tag --sort=-v:refname | grep -v '^${{ github.ref_name }}$' | head -1 || echo '')"
+            --notes-file release-notes.md \
+            artifacts/*

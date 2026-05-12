@@ -1,0 +1,98 @@
+# nfpm config — produces .deb + .rpm packages for the beacon binary.
+#
+# Invoked at release time by .github/workflows/release.yml:
+#
+#   VERSION=0.1.0-rc.1 ARCH=amd64 nfpm pkg \
+#     --packager deb --config packaging/nfpm.yaml --target dist/
+#   VERSION=0.1.0-rc.1 ARCH=arm64 nfpm pkg \
+#     --packager rpm --config packaging/nfpm.yaml --target dist/
+#
+# The binary `dist/netbrain-beacon-${ARCH}` must exist BEFORE invoking nfpm —
+# the release workflow downloads the matching `binary-linux-${ARCH}` artifact
+# into dist/ and renames it for nfpm to find.
+#
+# nfpm is a static Go binary; no fpm/ruby dependency. v2.x is current as of
+# 2026-05. https://nfpm.goreleaser.com/
+
+name: netbrain-beacon
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: NetBrain Platform <platform@netbrain.example>
+description: |
+  Customer-edge collector for the NetBrain platform.
+  .
+  Runs at customer sites that cannot ship telemetry directly to the
+  NetBrain SaaS (air-gapped, behind strict egress, internal-only device
+  management). Collects syslog, NetFlow, SNMP, and device-config data
+  from on-premises network gear and ships it back over mTLS to the
+  NetBrain platform.
+vendor: NetBrain
+homepage: https://github.com/vakaobr/netbrain-beacon
+license: Proprietary
+
+# Where the bits go on disk.
+contents:
+  # Main binary — the CI workflow stages it at ./dist/netbrain-beacon
+  # (no arch suffix; per-arch builds run as separate jobs and each one
+  # renames the downloaded artifact to this canonical path before
+  # invoking nfpm). Avoids env-var substitution in `src` paths, which
+  # nfpm v2.40 doesn't expand reliably.
+  - src: ./dist/netbrain-beacon
+    dst: /usr/local/bin/netbrain-beacon
+    file_info:
+      mode: 0755
+
+  # systemd unit (already in the repo).
+  - src: ./packaging/systemd/netbrain-beacon.service
+    dst: /lib/systemd/system/netbrain-beacon.service
+    file_info:
+      mode: 0644
+
+  # State directory (created with the right perms via the post-install script).
+  # The directory itself is a "ghost" entry — empty, but owned by the system
+  # user that the post-install creates.
+  - dst: /var/lib/netbrain-beacon
+    type: dir
+    file_info:
+      mode: 0700
+      owner: netbrain-beacon
+      group: netbrain-beacon
+
+  - dst: /etc/netbrain-beacon
+    type: dir
+    file_info:
+      mode: 0750
+      owner: root
+      group: netbrain-beacon
+
+  # README pointing operators to the runbook + GHCR + docs.
+  - src: ./packaging/README.md
+    dst: /usr/share/doc/netbrain-beacon/README.md
+    file_info:
+      mode: 0644
+
+# Pre/post install + remove scripts. nfpm runs the same scripts for deb + rpm.
+scripts:
+  preinstall: ./packaging/scripts/preinstall.sh
+  postinstall: ./packaging/scripts/postinstall.sh
+  preremove: ./packaging/scripts/preremove.sh
+  postremove: ./packaging/scripts/postremove.sh
+
+# Inter-package deps. Conservative defaults — the binary is statically linked
+# (CGO_ENABLED=0) so it doesn't need libc; systemd is the only real requirement.
+# Listed under deb-style names; nfpm auto-translates to rpm equivalents for
+# the rpm output (systemd → systemd).
+depends:
+  - systemd
+
+# Conflict declarations — there shouldn't be an older 'netbrain-beacon' package.
+# Reserved for v2+ if we ever rename.
+
+# rpm-specific knobs (deb is the default; rpm needs an explicit signature line
+# only if we sign, which we don't yet).
+rpm:
+  group: System Environment/Daemons
+  compression: zstd:default
