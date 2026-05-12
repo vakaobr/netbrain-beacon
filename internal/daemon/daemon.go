@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"github.com/secra/netbrain-beacon/internal/api"
+	"github.com/secra/netbrain-beacon/internal/collectors"
+	"github.com/secra/netbrain-beacon/internal/collectors/sender"
+	"github.com/secra/netbrain-beacon/internal/metrics"
 	"github.com/secra/netbrain-beacon/internal/probe"
 )
 
@@ -21,6 +24,10 @@ const (
 	DefaultBackoffInitial  = 1 * time.Second
 	DefaultBackoffMax      = 30 * time.Second
 	DefaultBackoffFactor   = 2.0
+	// DefaultSenderInterval is how often each sender goroutine drains
+	// its bucket. The platform side accepts bursts; the rate limiter
+	// inside store.Replay paces individual records when configured.
+	DefaultSenderInterval = 10 * time.Second
 )
 
 // Config bundles the daemon's runtime knobs. Zero values are populated
@@ -32,6 +39,7 @@ type Config struct {
 	BackoffInitial  time.Duration
 	BackoffMax      time.Duration
 	BackoffFactor   float64
+	SenderInterval  time.Duration
 }
 
 // Daemon is the long-running coordinator: poll → heartbeat → probe
@@ -61,6 +69,22 @@ type Daemon struct {
 	// signatures. Loaded from platform-pubkey.pem at boot.
 	PlatformPubKey PlatformPubKey
 
+	// Registry holds the collector lifecycle. Nil in tests + cold-start;
+	// the daemon's config-apply loop (future work) flips collectors via
+	// Registry.Enable/Disable based on platform config.
+	Registry *collectors.Registry
+
+	// DEKs is the runtime DEK holder shared between the daemon's
+	// DEK-rotation handler and the per-bucket senders. Nil disables
+	// the sender goroutines (test / pre-Phase-9 mode).
+	DEKs *collectors.DEKHolder
+
+	// Senders is the list of per-bucket sender instances the daemon
+	// drains on each SenderInterval tick. Empty disables the data
+	// plane (test / pre-Phase-9 mode). Each sender owns ONE bucket;
+	// constructing multiple Senders for the same bucket is unsafe.
+	Senders []*sender.Sender
+
 	// Logger is the structured logger used for daemon events. Wraps the
 	// H-3 redactor in production; tests pass slog.Default() or a buffer.
 	Logger *slog.Logger
@@ -88,6 +112,9 @@ func NewDaemon(d Daemon) *Daemon {
 	}
 	if d.Config.BackoffFactor == 0 {
 		d.Config.BackoffFactor = DefaultBackoffFactor
+	}
+	if d.Config.SenderInterval == 0 {
+		d.Config.SenderInterval = DefaultSenderInterval
 	}
 	if d.Logger == nil {
 		d.Logger = slog.Default()
@@ -124,6 +151,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 		go func() {
 			defer wg.Done()
 			_ = d.Probes.Run(runCtx)
+		}()
+	}
+
+	// Per-bucket sender goroutines (Phase 9 + I-1 wiring). Each sender
+	// owns one bucket and drains on its own ticker so a slow collector
+	// doesn't starve the others.
+	for _, s := range d.Senders {
+		s := s
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.senderLoop(runCtx, s)
 		}()
 	}
 
@@ -185,6 +224,80 @@ func (d *Daemon) pollLoop(ctx context.Context) {
 				return
 			}
 			d.log("heartbeat_failed", slog.LevelWarn, slog.String("err", err.Error()))
+		}
+	}
+}
+
+// senderLoop drains s.Bucket on every SenderInterval tick until ctx is
+// cancelled. Errors from Run are logged at WARN and classified into
+// metrics labels so operators can see the failure mode shape via
+// Prometheus (the daemon itself doesn't change behaviour per failure
+// mode — that's the sender's job via Classify dispatch).
+//
+// Per-cycle delivered count emits to beacon_sender_delivered_total
+// {bucket}; failure reasons (retry / refresh / backoff / fatal / drop)
+// emit to beacon_sender_failed_total{bucket,reason}.
+func (d *Daemon) senderLoop(ctx context.Context, s *sender.Sender) {
+	t := time.NewTicker(d.Config.SenderInterval)
+	defer t.Stop()
+	bucket := string(s.Bucket)
+	var prevStats sender.Counters
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		n, err := s.Run(ctx)
+
+		// Diff lifetime counters → cycle deltas so the metric emission
+		// is per-event rather than re-publishing cumulative values.
+		cur := s.Stats()
+		delivered := cur.Delivered - prevStats.Delivered
+		dropped := cur.DroppedAlert - prevStats.DroppedAlert
+		retried := cur.Retried - prevStats.Retried
+		refreshed := cur.Refreshed - prevStats.Refreshed
+		backedOff := cur.BackedOff - prevStats.BackedOff
+		fatal := cur.Fatal - prevStats.Fatal
+		unknown := cur.Unknown - prevStats.Unknown
+		prevStats = cur
+
+		if delivered > 0 {
+			metrics.SenderDeliveredTotal.WithLabelValues(bucket).Add(float64(delivered))
+		}
+		if dropped > 0 {
+			metrics.SenderFailedTotal.WithLabelValues(bucket, "drop_and_alert").Add(float64(dropped))
+		}
+		if retried > 0 {
+			metrics.SenderFailedTotal.WithLabelValues(bucket, "retry").Add(float64(retried))
+		}
+		if refreshed > 0 {
+			metrics.SenderFailedTotal.WithLabelValues(bucket, "dek_expired").Add(float64(refreshed))
+		}
+		if backedOff > 0 {
+			metrics.SenderFailedTotal.WithLabelValues(bucket, "back_off_heavy").Add(float64(backedOff))
+		}
+		if fatal > 0 {
+			metrics.SenderFailedTotal.WithLabelValues(bucket, "fatal_reenroll").Add(float64(fatal))
+		}
+		if unknown > 0 {
+			metrics.SenderFailedTotal.WithLabelValues(bucket, "unknown_action").Add(float64(unknown))
+		}
+
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
+			d.log("sender_failed", slog.LevelWarn,
+				slog.String("bucket", bucket),
+				slog.Int("delivered", n),
+				slog.String("err", err.Error()))
+			continue
+		}
+		if n > 0 {
+			d.log("sender_delivered", slog.LevelDebug,
+				slog.String("bucket", bucket),
+				slog.Int("delivered", n))
 		}
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/secra/netbrain-beacon/internal/metrics"
 )
 
 // State holds the runtime fields the daemon mutates across goroutines.
@@ -41,6 +43,7 @@ type State struct {
 // NewState returns a State with the given initial values from
 // enrollment-metadata.json.
 func NewState(initialDEKVersion int) *State {
+	metrics.DEKVersion.Set(float64(initialDEKVersion))
 	return &State{dekVersion: initialDEKVersion}
 }
 
@@ -93,10 +96,13 @@ func (s *State) DEKVersion() int {
 
 // SetDEKVersion updates the active DEK version. Called by the DEK
 // rotation handler ONLY after a successful signature verification.
+// Also updates the beacon_dek_version Prometheus gauge so operator
+// dashboards reflect the rotation immediately.
 func (s *State) SetDEKVersion(v int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dekVersion = v
+	metrics.DEKVersion.Set(float64(v))
 }
 
 // Counters tracks operator-visible aggregate numbers the heartbeat

@@ -20,12 +20,14 @@ import (
 	"github.com/secra/netbrain-beacon/internal/collectors"
 	"github.com/secra/netbrain-beacon/internal/collectors/configs"
 	"github.com/secra/netbrain-beacon/internal/collectors/netflow"
+	"github.com/secra/netbrain-beacon/internal/collectors/sender"
 	"github.com/secra/netbrain-beacon/internal/collectors/snmp"
 	bcrypto "github.com/secra/netbrain-beacon/internal/crypto"
 	"github.com/secra/netbrain-beacon/internal/daemon"
 	"github.com/secra/netbrain-beacon/internal/enroll"
 	beaconlog "github.com/secra/netbrain-beacon/internal/log"
 	"github.com/secra/netbrain-beacon/internal/metrics"
+	"github.com/secra/netbrain-beacon/internal/store"
 	"github.com/secra/netbrain-beacon/internal/transport"
 )
 
@@ -174,17 +176,62 @@ func buildDaemon(stateDir string, meta enroll.Metadata, logger *slog.Logger) (*d
 		return nil, fmt.Errorf("load pubkey: %w", err)
 	}
 
+	// Open the on-disk store. The senders below drain its buckets.
+	bboltStore, err := store.Open(stateDir, store.Options{})
+	if err != nil {
+		// store.ErrCorrupt is informational — Open returns a working
+		// fresh-DB Store alongside the error. Anything else is fatal.
+		if !errors.Is(err, store.ErrCorrupt) {
+			return nil, fmt.Errorf("store open: %w", err)
+		}
+		logger.Warn("daemon.store_corrupt_recovered", slog.String("err", err.Error()))
+	}
+
 	// Register the 3 stub collectors so /collectors lists them and the
-	// daemon config-apply loop can flip their enable/disable.
+	// daemon config-apply loop can flip their enable/disable. syslog gets
+	// wired by the future config-apply loop (it's a server.Server, not a
+	// Stub).
 	registry := collectors.NewRegistry()
 	registry.Add("netflow", &netflow.Stub{})
 	registry.Add("snmp", &snmp.Stub{})
 	registry.Add("configs", &configs.Stub{})
-	// syslog gets wired here when the daemon-config-apply loop opts it in;
-	// the stub-style registration above keeps the registry observable until then.
 
-	// DEK holder (used by the sender; Phase 9 wires it).
-	_ = collectors.NewDEKHolder(&collectors.DEK{Key: dek, Version: byte(meta.DEKVersion)})
+	// DEK holder shared by the sender goroutines + the daemon's
+	// DEK-rotation handler.
+	deks := collectors.NewDEKHolder(&collectors.DEK{Key: dek, Version: byte(meta.DEKVersion)})
+
+	// One sender per bucket. Each sender owns its bucket; sharing a
+	// bucket across senders would race on cursor advance.
+	senders := []*sender.Sender{
+		{
+			Store:     bboltStore,
+			Bucket:    store.BucketLogs,
+			BeaconID:  meta.BeaconID,
+			DEKs:      deks,
+			APIClient: apiClient,
+		},
+		{
+			Store:     bboltStore,
+			Bucket:    store.BucketFlows,
+			BeaconID:  meta.BeaconID,
+			DEKs:      deks,
+			APIClient: apiClient,
+		},
+		{
+			Store:     bboltStore,
+			Bucket:    store.BucketSNMP,
+			BeaconID:  meta.BeaconID,
+			DEKs:      deks,
+			APIClient: apiClient,
+		},
+		{
+			Store:     bboltStore,
+			Bucket:    store.BucketConfigs,
+			BeaconID:  meta.BeaconID,
+			DEKs:      deks,
+			APIClient: apiClient,
+		},
+	}
 
 	d := daemon.NewDaemon(daemon.Daemon{
 		APIClient: apiClient,
@@ -195,6 +242,9 @@ func buildDaemon(stateDir string, meta enroll.Metadata, logger *slog.Logger) (*d
 		},
 		State:          daemon.NewState(meta.DEKVersion),
 		PlatformPubKey: daemon.PlatformPubKey{Key: pub},
+		Registry:       registry,
+		DEKs:           deks,
+		Senders:        senders,
 		Logger:         logger,
 	})
 	return d, nil
@@ -207,6 +257,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	stateDir := fs.String("state-dir", defaultStateDir(), "directory containing enrollment artifacts")
 	asJSON := fs.Bool("json", false, "emit machine-readable JSON instead of human-readable text")
+	checkServer := fs.Bool("check-server", false, "additionally hit GET /cert-status over mTLS to report server-side cert validity")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -214,6 +265,13 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "status: %v\n", err)
 		return 1
+	}
+	if *checkServer {
+		// Bound the round-trip; CheckServer returns a partial report on
+		// any failure (Reachable=false + Error populated) — never panics.
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		r.ServerCheck = cli.CheckServer(ctx, *stateDir)
 	}
 	if *asJSON {
 		if err := cli.FormatStatusJSON(stdout, r); err != nil {

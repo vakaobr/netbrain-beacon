@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
@@ -21,6 +22,7 @@ import (
 	"github.com/secra/netbrain-beacon/internal/collectors"
 	bcrypto "github.com/secra/netbrain-beacon/internal/crypto"
 	"github.com/secra/netbrain-beacon/internal/store"
+	"github.com/secra/netbrain-beacon/internal/transport"
 )
 
 // Errors surfaced by Sender.
@@ -30,10 +32,40 @@ var (
 	// store retains the buffered records and the caller retries.
 	ErrNoDEK = errors.New("sender: no DEK loaded")
 
-	// ErrSendFailed wraps any non-2xx response from the platform. Carries
-	// the HTTP status + body excerpt for the daemon's structured log.
-	ErrSendFailed = errors.New("sender: platform rejected batch")
+	// ErrSendFailed is the generic non-2xx wrapper — used when the
+	// platform returns an error code that maps to ActionRetry. Caller
+	// should retry on the next tick.
+	ErrSendFailed = errors.New("sender: platform rejected batch (retry)")
+
+	// ErrSendDEKExpired surfaces ActionRefreshDEK — the active DEK is
+	// past the 7-day rotation grace. Daemon should poll /config
+	// immediately to fetch the rotated DEK; the unsent record stays in
+	// the bucket so the next cycle (after rotation) succeeds.
+	ErrSendDEKExpired = errors.New("sender: DEK expired — needs rotation refresh")
+
+	// ErrSendBackOff surfaces ActionBackOffHeavy — typically 503
+	// BEACON_PROTOCOL_NOT_ENABLED. The daemon should slow down rather
+	// than retry on its normal cadence.
+	ErrSendBackOff = errors.New("sender: platform asked for heavy backoff")
+
+	// ErrSendFatal surfaces ActionFatalReenroll — the platform sees this
+	// beacon as cross-tenant / URL-mismatched / cert-revoked. The daemon
+	// can't recover without operator action (re-enroll).
+	ErrSendFatal = errors.New("sender: fatal — operator action required (re-enroll)")
 )
+
+// Counters exposes the sender's lifetime counters for metrics emission.
+// Returned by Stats. Each field is the cumulative count over the
+// daemon's lifetime; resets only on restart.
+type Counters struct {
+	Delivered    int64
+	DroppedAlert int64 // ActionDropAndAlert: record deleted + alert flagged
+	Retried      int64 // ActionRetry: record preserved, halt this cycle
+	Refreshed    int64 // ActionRefreshDEK: record preserved, signal DEK refresh
+	BackedOff    int64 // ActionBackOffHeavy
+	Fatal        int64 // ActionFatalReenroll
+	Unknown      int64 // ActionUnknown — server returned an unrecognized code
+}
 
 // PathForBucket maps a store.Bucket to the matching /data/{type} URL
 // path suffix. Centralised here so any future bucket rename touches one
@@ -81,6 +113,30 @@ type Sender struct {
 	// drains. The daemon's outer scheduler invokes Run on a tick; this
 	// budget prevents one slow collector from starving the others.
 	MaxRecordsPerCycle int
+
+	// Lifetime counters surfaced via Stats(). Updated atomically by the
+	// per-record makeSendFn callback so reads from the daemon's metric
+	// emitter are lock-free.
+	delivered    atomic.Int64
+	droppedAlert atomic.Int64
+	retried      atomic.Int64
+	refreshed    atomic.Int64
+	backedOff    atomic.Int64
+	fatal        atomic.Int64
+	unknown      atomic.Int64
+}
+
+// Stats returns the lifetime counter snapshot for metrics emission.
+func (s *Sender) Stats() Counters {
+	return Counters{
+		Delivered:    s.delivered.Load(),
+		DroppedAlert: s.droppedAlert.Load(),
+		Retried:      s.retried.Load(),
+		Refreshed:    s.refreshed.Load(),
+		BackedOff:    s.backedOff.Load(),
+		Fatal:        s.fatal.Load(),
+		Unknown:      s.unknown.Load(),
+	}
 }
 
 // Run drains the bucket once. Returns the number of records delivered +
@@ -131,9 +187,16 @@ func (s *Sender) makeSendFn(dek *collectors.DEK) store.SendFunc {
 	}
 }
 
-// postEnvelope dispatches the per-bucket POST. Uses the generated
-// client's `Push*WithBody` methods by bucket name so we get the
-// auto-generated URL templating + path params for free.
+// postEnvelope dispatches the per-bucket POST and routes the response
+// through transport.Classify so each of the 17 known platform error
+// codes maps to the right action (drop / refresh-DEK / back-off /
+// fatal / retry) instead of being lumped under "non-2xx = retry".
+//
+// Returns nil for actions where store.Replay should DELETE the record
+// (Success, DropAndAlert) and a typed error for actions where the
+// record must be preserved (Retry, RefreshDEK, BackOffHeavy, Fatal).
+// Caller's store.Replay halts on non-nil error; the daemon's senderLoop
+// inspects the error type via errors.Is to decide its next move.
 func (s *Sender) postEnvelope(ctx context.Context, envelope []byte, idempotencyKey uuid.UUID, dekVersion byte) error {
 	body := bytes.NewReader(envelope)
 	const contentType = "application/octet-stream"
@@ -162,12 +225,70 @@ func (s *Sender) postEnvelope(ctx context.Context, envelope []byte, idempotencyK
 		return fmt.Errorf("sender: invalid bucket %q", s.Bucket)
 	}
 	if err != nil {
-		return fmt.Errorf("sender: http: %w", err)
+		// Network-level failure (DNS, TLS handshake, connection refused).
+		// Treat as retryable; the record stays in the bucket.
+		s.retried.Add(1)
+		return fmt.Errorf("%w: http: %w", ErrSendFailed, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	action, srvErr := transport.Classify(resp)
+	switch action {
+	case transport.ActionSuccess:
+		s.delivered.Add(1)
 		return nil
+
+	case transport.ActionDropAndAlert:
+		// AAD mismatch / decompression bomb / envelope invalid — these
+		// mean the payload itself is unrecoverable; retrying won't help.
+		// Returning nil lets store.Replay delete the record. The counter
+		// + an upstream alert capture the security signal.
+		s.droppedAlert.Add(1)
+		return nil
+
+	case transport.ActionRefreshDEK:
+		// DEK expired — the daemon's next config-poll will fetch the
+		// rotated key and verify its signature (M-11). Halt this cycle;
+		// the record stays put.
+		s.refreshed.Add(1)
+		return fmt.Errorf("%w: %w", ErrSendDEKExpired, srvErrToError(srvErr))
+
+	case transport.ActionBackOffHeavy:
+		s.backedOff.Add(1)
+		return fmt.Errorf("%w: %w", ErrSendBackOff, srvErrToError(srvErr))
+
+	case transport.ActionFatalReenroll:
+		// Cert/URL mismatch (H-2 IDOR attempt) or cross-tenant 404 —
+		// operator action required.
+		s.fatal.Add(1)
+		return fmt.Errorf("%w: %w", ErrSendFatal, srvErrToError(srvErr))
+
+	case transport.ActionRetry:
+		s.retried.Add(1)
+		return fmt.Errorf("%w: %w", ErrSendFailed, srvErrToError(srvErr))
+
+	case transport.ActionNotModified:
+		// 304 isn't valid for /data/* endpoints. Treat as a server-side
+		// regression: halt + log.
+		s.unknown.Add(1)
+		return fmt.Errorf("%w: unexpected 304 on data-push", ErrSendFailed)
+
+	default: // ActionUnknown
+		// Server returned a code we don't recognize. Halt conservatively
+		// — Classify already defaults to FatalReenroll for unknown 4xx,
+		// so reaching here only happens on a future Action that we forgot
+		// to handle.
+		s.unknown.Add(1)
+		return fmt.Errorf("%w: unmapped action", ErrSendFailed)
 	}
-	return fmt.Errorf("%w: HTTP %d", ErrSendFailed, resp.StatusCode)
+}
+
+// srvErrToError turns a parsed *transport.ServerError into a regular
+// error (or a sentinel for nil). Used to enrich wrapped error chains
+// without nil-deref panics.
+func srvErrToError(e *transport.ServerError) error {
+	if e == nil {
+		return errors.New("no server envelope")
+	}
+	return e
 }

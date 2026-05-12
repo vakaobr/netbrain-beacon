@@ -26,7 +26,8 @@ import (
 type fakePlatform struct {
 	mu          sync.Mutex
 	received    []fakeRecord
-	statusCodes []int // pop one per call; default 202 if exhausted
+	statusCodes []int    // pop one per call; default 202 if exhausted
+	errorCodes  []string // matching error envelope codes; default "X"
 	hits        atomic.Int64
 }
 
@@ -56,12 +57,20 @@ func (f *fakePlatform) handler(beaconID string) http.Handler {
 			status = f.statusCodes[0]
 			f.statusCodes = f.statusCodes[1:]
 		}
+		errCode := "X"
+		if len(f.errorCodes) > 0 {
+			errCode = f.errorCodes[0]
+			f.errorCodes = f.errorCodes[1:]
+		}
 		f.mu.Unlock()
+		if status >= 400 {
+			w.Header().Set("Content-Type", "application/json")
+		}
 		w.WriteHeader(status)
 		// For non-success status, include a JSON error envelope so the
 		// caller can see we used the canonical platform error shape.
 		if status >= 400 {
-			_, _ = w.Write([]byte(`{"error":{"code":"X","message":"x"}}`))
+			_, _ = w.Write([]byte(`{"error":{"code":"` + errCode + `","message":"x"}}`))
 		}
 	})
 }
@@ -248,6 +257,114 @@ func TestSenderHaltsOnPlatformError(t *testing.T) {
 	// 1 record delivered + deleted; 2 remain in the bucket.
 	count, _ := f.Store.Count(store.BucketLogs)
 	require.Equal(t, 2, count)
+}
+
+// --- I-6: Classify-dispatch action tests ---
+
+func TestSenderDEKExpiredHaltsAndPreservesRecord(t *testing.T) {
+	// BEACON_DEK_EXPIRED (401) → ActionRefreshDEK → ErrSendDEKExpired;
+	// record stays in the bucket so the next cycle (after rotation) retries.
+	f := newSenderFixture(t, store.BucketLogs)
+	f.Plat.statusCodes = []int{http.StatusUnauthorized}
+	f.Plat.errorCodes = []string{"BEACON_DEK_EXPIRED"}
+	_, _ = f.Store.Put(store.BucketLogs, []byte("doomed"))
+
+	_, err := f.Sender.Run(context.Background())
+	require.ErrorIs(t, err, ErrSendDEKExpired)
+
+	count, _ := f.Store.Count(store.BucketLogs)
+	require.Equal(t, 1, count, "record preserved for next-cycle retry")
+	require.Equal(t, int64(1), f.Sender.Stats().Refreshed)
+}
+
+func TestSenderProtocolDisabledTriggersBackoff(t *testing.T) {
+	// 503 BEACON_PROTOCOL_NOT_ENABLED → ActionBackOffHeavy → ErrSendBackOff.
+	f := newSenderFixture(t, store.BucketLogs)
+	f.Plat.statusCodes = []int{http.StatusServiceUnavailable}
+	f.Plat.errorCodes = []string{"BEACON_PROTOCOL_NOT_ENABLED"}
+	_, _ = f.Store.Put(store.BucketLogs, []byte("queued"))
+
+	_, err := f.Sender.Run(context.Background())
+	require.ErrorIs(t, err, ErrSendBackOff)
+
+	count, _ := f.Store.Count(store.BucketLogs)
+	require.Equal(t, 1, count, "record preserved when platform feature flag is off")
+	require.Equal(t, int64(1), f.Sender.Stats().BackedOff)
+}
+
+func TestSenderAADMismatchDropsRecord(t *testing.T) {
+	// BEACON_AAD_MISMATCH (400) → ActionDropAndAlert → record DELETED;
+	// retrying with the same payload would keep failing. Drop counter
+	// increments so the alert path catches it.
+	f := newSenderFixture(t, store.BucketLogs)
+	f.Plat.statusCodes = []int{http.StatusBadRequest, http.StatusAccepted}
+	f.Plat.errorCodes = []string{"BEACON_AAD_MISMATCH", ""}
+	_, _ = f.Store.Put(store.BucketLogs, []byte("first"))
+	_, _ = f.Store.Put(store.BucketLogs, []byte("second"))
+
+	n, err := f.Sender.Run(context.Background())
+	require.NoError(t, err, "drop is silent at the sender level; alert via counter")
+	require.Equal(t, 2, n, "1 dropped + 1 delivered = 2 records processed off the bucket")
+
+	count, _ := f.Store.Count(store.BucketLogs)
+	require.Equal(t, 0, count, "AAD-mismatch record removed even though it failed")
+	require.Equal(t, int64(1), f.Sender.Stats().DroppedAlert)
+	require.Equal(t, int64(1), f.Sender.Stats().Delivered)
+}
+
+func TestSenderURLCertMismatchIsFatal(t *testing.T) {
+	// BEACON_URL_CERT_MISMATCH (403) → ActionFatalReenroll → ErrSendFatal.
+	// Indicates H-2 IDOR / mis-paired cert; operator must re-enroll.
+	f := newSenderFixture(t, store.BucketLogs)
+	f.Plat.statusCodes = []int{http.StatusForbidden}
+	f.Plat.errorCodes = []string{"BEACON_URL_CERT_MISMATCH"}
+	_, _ = f.Store.Put(store.BucketLogs, []byte("blocked"))
+
+	_, err := f.Sender.Run(context.Background())
+	require.ErrorIs(t, err, ErrSendFatal)
+	require.Equal(t, int64(1), f.Sender.Stats().Fatal)
+
+	count, _ := f.Store.Count(store.BucketLogs)
+	require.Equal(t, 1, count, "fatal must preserve the record — re-enroll might succeed")
+}
+
+func TestSenderUnknownCodeIsFatal(t *testing.T) {
+	// 4xx with a code Classify doesn't recognize → defaults to fatal
+	// (the conservative choice for a server that added a code we
+	// haven't mapped yet).
+	f := newSenderFixture(t, store.BucketLogs)
+	f.Plat.statusCodes = []int{http.StatusBadRequest}
+	f.Plat.errorCodes = []string{"FUTURE_UNRECOGNIZED_CODE"}
+	_, _ = f.Store.Put(store.BucketLogs, []byte("x"))
+
+	_, err := f.Sender.Run(context.Background())
+	require.ErrorIs(t, err, ErrSendFatal)
+}
+
+func TestSenderStatsRoundTrip(t *testing.T) {
+	// One success + one drop + one DEK-expired across separate Run cycles.
+	f := newSenderFixture(t, store.BucketLogs)
+
+	// 1) success
+	_, _ = f.Store.Put(store.BucketLogs, []byte("ok"))
+	_, err := f.Sender.Run(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), f.Sender.Stats().Delivered)
+
+	// 2) AAD mismatch (drop)
+	f.Plat.statusCodes = []int{http.StatusBadRequest}
+	f.Plat.errorCodes = []string{"BEACON_AAD_MISMATCH"}
+	_, _ = f.Store.Put(store.BucketLogs, []byte("badaad"))
+	_, _ = f.Sender.Run(context.Background())
+	require.Equal(t, int64(1), f.Sender.Stats().DroppedAlert)
+	require.Equal(t, int64(1), f.Sender.Stats().Delivered, "delivered count is cumulative across cycles")
+
+	// 3) DEK expired (refreshed)
+	f.Plat.statusCodes = []int{http.StatusUnauthorized}
+	f.Plat.errorCodes = []string{"BEACON_DEK_EXPIRED"}
+	_, _ = f.Store.Put(store.BucketLogs, []byte("preserved"))
+	_, _ = f.Sender.Run(context.Background())
+	require.Equal(t, int64(1), f.Sender.Stats().Refreshed)
 }
 
 func TestSenderNoDEK(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/secra/netbrain-beacon/internal/api"
+	"github.com/secra/netbrain-beacon/internal/metrics"
 )
 
 // heartbeatOnce builds a BeaconHeartbeatRequest from the current daemon
@@ -21,15 +22,18 @@ func (d *Daemon) heartbeatOnce(ctx context.Context) error {
 	req := d.buildHeartbeatRequest()
 	resp, err := d.APIClient.PostBeaconHeartbeat(ctx, d.Identity.ID, req, d.requestEditors()...)
 	if err != nil {
+		metrics.HeartbeatTotal.WithLabelValues("network_error").Inc()
 		return fmt.Errorf("heartbeat: http: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)) //nolint:forbidigo
+		metrics.HeartbeatTotal.WithLabelValues("server_error").Inc()
 		return fmt.Errorf("heartbeat: HTTP %d: %s", resp.StatusCode, sanitizeBody(body))
 	}
 
+	metrics.HeartbeatTotal.WithLabelValues("success").Inc()
 	d.log("heartbeat_ok", slog.LevelDebug, slog.Int("status", resp.StatusCode))
 	return nil
 }

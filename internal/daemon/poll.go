@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/secra/netbrain-beacon/internal/api"
+	"github.com/secra/netbrain-beacon/internal/metrics"
 )
 
 // PollResult is the outcome of one poll cycle. Returned for tests +
@@ -51,6 +52,7 @@ type PollResult struct {
 // retry pacing.
 func (d *Daemon) pollOnce(ctx context.Context) (PollResult, error) {
 	res := PollResult{}
+	start := time.Now()
 
 	params := &api.PollBeaconConfigParams{}
 	if hash := d.State.ConfigHash(); hash != "" {
@@ -60,6 +62,8 @@ func (d *Daemon) pollOnce(ctx context.Context) (PollResult, error) {
 
 	resp, err := d.APIClient.PollBeaconConfig(ctx, d.Identity.ID, params, d.requestEditors()...)
 	if err != nil {
+		metrics.PollTotal.WithLabelValues("network_error").Inc()
+		metrics.PollDurationSeconds.WithLabelValues("network_error").Observe(time.Since(start).Seconds())
 		return res, fmt.Errorf("poll: http: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -73,10 +77,14 @@ func (d *Daemon) pollOnce(ctx context.Context) (PollResult, error) {
 		}
 	}
 
+	elapsed := time.Since(start).Seconds()
+
 	switch resp.StatusCode {
 	case http.StatusNotModified:
 		// 304 → re-stamp lastSeenAt without changing the hash.
 		d.State.SetConfigHash(d.State.ConfigHash())
+		metrics.PollTotal.WithLabelValues("not_modified").Inc()
+		metrics.PollDurationSeconds.WithLabelValues("not_modified").Observe(elapsed)
 		return res, nil
 
 	case http.StatusOK:
@@ -107,6 +115,8 @@ func (d *Daemon) pollOnce(ctx context.Context) (PollResult, error) {
 				d.log("dek_signature_verify_failed", slog.LevelError,
 					slog.String("beacon_id", d.Identity.ID.String()),
 					slog.String("err", verr.Error()))
+				// M-11 fail-closed: this is a P1 security signal.
+				metrics.DEKVerifyFailedTotal.Inc()
 				// Continue with the old DEK; DON'T swap.
 			}
 		}
@@ -116,6 +126,13 @@ func (d *Daemon) pollOnce(ctx context.Context) (PollResult, error) {
 		res.NewHash = newHash
 		res.Modified = newHash != oldHash
 		d.State.SetConfigHash(newHash)
+
+		result := "modified"
+		if !res.Modified {
+			result = "unchanged"
+		}
+		metrics.PollTotal.WithLabelValues(result).Inc()
+		metrics.PollDurationSeconds.WithLabelValues(result).Observe(elapsed)
 
 		if res.Modified {
 			d.log("config_applied", slog.LevelInfo,
@@ -130,6 +147,8 @@ func (d *Daemon) pollOnce(ctx context.Context) (PollResult, error) {
 		// 4xx/5xx — surface a sanitised body so the daemon can log the
 		// server error code without dumping arbitrary content into the log.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)) //nolint:forbidigo
+		metrics.PollTotal.WithLabelValues("server_error").Inc()
+		metrics.PollDurationSeconds.WithLabelValues("server_error").Observe(elapsed)
 		return res, fmt.Errorf("poll: HTTP %d: %s", resp.StatusCode, sanitizeBody(body))
 	}
 }

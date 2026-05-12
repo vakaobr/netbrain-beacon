@@ -28,6 +28,7 @@ type StatusReport struct {
 	StoreBuckets   map[string]BucketStat `json:"store_buckets,omitempty"`
 	StoreEvictLast string                `json:"store_evict_last,omitempty"`
 	StateDir       string                `json:"state_dir"`
+	ServerCheck    *ServerCheckReport    `json:"server_check,omitempty"`
 	Warnings       []string              `json:"warnings,omitempty"`
 }
 
@@ -133,6 +134,25 @@ func FormatStatusHuman(w io.Writer, r *StatusReport) {
 		}
 		if r.StoreEvictLast != "" {
 			_, _ = fmt.Fprintf(w, "Last eviction: %s\n", r.StoreEvictLast)
+		}
+	}
+	if r.ServerCheck != nil {
+		_, _ = fmt.Fprintln(w, "")
+		_, _ = fmt.Fprintln(w, "Server check (live mTLS round-trip):")
+		sc := r.ServerCheck
+		if !sc.Reachable {
+			_, _ = fmt.Fprintf(w, "  reachable:        no\n  error:            %s\n", sc.Error)
+		} else {
+			_, _ = fmt.Fprintf(w, "  reachable:        yes (HTTP %d)\n", sc.HTTPStatus)
+			if sc.ExpiresAt != "" {
+				_, _ = fmt.Fprintf(w, "  expires_at:       %s (%d days)\n", sc.ExpiresAt, sc.DaysUntilExpiry)
+			}
+			if sc.RecommendedAction != "" {
+				_, _ = fmt.Fprintf(w, "  recommended:      %s\n", sc.RecommendedAction)
+			}
+			if sc.RevocationReason != "" {
+				_, _ = fmt.Fprintf(w, "  revocation:       %s\n", sc.RevocationReason)
+			}
 		}
 	}
 	for _, w2 := range r.Warnings {

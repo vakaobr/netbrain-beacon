@@ -85,11 +85,39 @@ when the daemon is wedged:
 sudo -u netbrain-beacon netbrain-beacon status --state-dir /var/lib/netbrain-beacon
 ```
 
+Output shows whether the beacon is enrolled, the beacon UUID, server URL,
+DEK version, cert expiry + lifecycle-remaining percentage, store-bucket
+records/bytes, and any warnings.
+
 For machine-readable output:
 
 ```bash
 sudo -u netbrain-beacon netbrain-beacon status --state-dir /var/lib/netbrain-beacon --json | jq .
 ```
+
+### Check server-side validity
+
+Add `--check-server` to additionally hit `GET /cert-status` over mTLS
+and verify the platform's view of this beacon:
+
+```bash
+sudo -u netbrain-beacon netbrain-beacon status \
+    --state-dir /var/lib/netbrain-beacon --check-server
+```
+
+Output adds:
+
+```
+Server check (live mTLS round-trip):
+  reachable:        yes (HTTP 200)
+  expires_at:       2026-08-12T...
+  recommended:      none | rotate | reenroll
+  revocation:       (empty unless the platform revoked this beacon)
+```
+
+Use this when you need to confirm the platform still trusts this
+beacon (e.g., after a suspected compromise, or before a maintenance
+window). Doesn't require the daemon to be running.
 
 ## List collectors
 
@@ -166,6 +194,88 @@ ls /var/lib/netbrain-beacon/*.broken.*.bbolt
 # then deletes it. The daemon already created a fresh empty store.
 # The `configs` bucket loses its contents — the next config-poll cycle
 # repopulates it from the platform side.
+```
+
+## Uninstall
+
+### Graceful uninstall (preserve data)
+
+If you might re-install later and want to keep the buffered telemetry
++ enrollment state:
+
+```bash
+# 1) Stop + disable the service.
+sudo systemctl disable --now netbrain-beacon
+
+# 2) Remove the systemd unit + binary.
+sudo rm /etc/systemd/system/netbrain-beacon.service
+sudo systemctl daemon-reload
+sudo rm /usr/local/bin/netbrain-beacon
+```
+
+State stays at `/var/lib/netbrain-beacon` and logs at
+`/var/log/netbrain-beacon`. A future `install.sh` + `netbrain-beacon
+enroll` will reuse the directories.
+
+### Full uninstall (delete state)
+
+To completely remove the beacon including its enrollment, encrypted
+buffer, and the dedicated system user:
+
+```bash
+# 1) Stop + disable.
+sudo systemctl disable --now netbrain-beacon
+
+# 2) Revoke the beacon on the platform side BEFORE deleting local
+# state. The platform admin runs (from the netbrain admin UI or API):
+#     POST /api/v1/admin/beacons/{beacon_id}/revoke
+# This prevents the cert from being reusable if anyone recovers the
+# state dir from disk forensics.
+sudo -u netbrain-beacon netbrain-beacon status \
+    --state-dir /var/lib/netbrain-beacon --json | jq -r .beacon_id
+# Pass that UUID to the platform admin for revocation.
+
+# 3) Remove the systemd unit + binary.
+sudo rm /etc/systemd/system/netbrain-beacon.service
+sudo systemctl daemon-reload
+sudo rm /usr/local/bin/netbrain-beacon
+
+# 4) Delete state + logs.
+sudo rm -rf /var/lib/netbrain-beacon
+sudo rm -rf /var/log/netbrain-beacon
+
+# 5) Remove the service user.
+sudo userdel netbrain-beacon
+```
+
+After step 5 the system is fully clean. If `userdel` complains the user
+"is currently used by process N", check with `pgrep -u netbrain-beacon`
+and ensure the daemon really stopped before retrying.
+
+### Docker uninstall
+
+```bash
+docker stop netbrain-beacon
+docker rm netbrain-beacon
+docker rmi netbrain-beacon:<tag>
+# State volume:
+docker volume rm netbrain-beacon-state    # or rm -rf the bind-mounted dir
+```
+
+### Verify removal
+
+```bash
+# Service should be unknown to systemd:
+systemctl status netbrain-beacon
+#   Unit netbrain-beacon.service could not be found.
+
+# Binary should be gone:
+which netbrain-beacon
+#   (empty)
+
+# User should be gone:
+getent passwd netbrain-beacon
+#   (empty)
 ```
 
 ## Phase 7b pentest reference

@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/secra/netbrain-beacon/internal/api"
+	"github.com/secra/netbrain-beacon/internal/metrics"
 )
 
 // Errors surfaced by Rotate.
@@ -113,11 +114,24 @@ type Rotator struct {
 // finds this state can recover by reading either the primary or .prev
 // path. The Recovery() helper (TODO Phase 8) prefers the primary; falls
 // back to .prev only on parse failure.
-func (r *Rotator) Rotate(ctx context.Context) error {
+func (r *Rotator) Rotate(ctx context.Context) (err error) {
 	if !r.inFlight.CompareAndSwap(false, true) {
+		// Coalesced caller — don't count as a rotation attempt for the
+		// rotation_total metric (we'd double-count when the in-flight
+		// rotation completes).
 		return ErrRotationInFlight
 	}
 	defer r.inFlight.Store(false)
+
+	// Emit the outcome metric on every Rotate call that actually
+	// reaches the API. Labels: success | failed.
+	defer func() {
+		result := "success"
+		if err != nil {
+			result = "failed"
+		}
+		metrics.CertRotationTotal.WithLabelValues(result).Inc()
+	}()
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
