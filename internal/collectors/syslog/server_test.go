@@ -11,7 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/secra/netbrain-beacon/internal/store"
+	"github.com/velonet/netbrain-beacon/internal/store"
 )
 
 func newTestServer(t *testing.T, cfg Config) (*Server, *store.Store) {

@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/secra/netbrain-beacon/internal/metrics"
+	"github.com/velonet/netbrain-beacon/internal/metrics"
 )
 
 // State holds the runtime fields the daemon mutates across goroutines.

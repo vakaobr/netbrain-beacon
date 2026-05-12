@@ -7,10 +7,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/secra/netbrain-beacon/internal/collectors"
-	"github.com/secra/netbrain-beacon/internal/collectors/configs"
-	"github.com/secra/netbrain-beacon/internal/collectors/netflow"
-	"github.com/secra/netbrain-beacon/internal/collectors/snmp"
+	"github.com/velonet/netbrain-beacon/internal/collectors"
+	"github.com/velonet/netbrain-beacon/internal/collectors/configs"
+	"github.com/velonet/netbrain-beacon/internal/collectors/netflow"
+	"github.com/velonet/netbrain-beacon/internal/collectors/snmp"
 )
 
 func TestRegistryAddGet(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/secra/netbrain-beacon/internal/collectors"
+	"github.com/velonet/netbrain-beacon/internal/collectors"
 )
 
 // CollectorsReport is the structured output of `netbrain-beacon collectors`.

@@ -11,8 +11,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/secra/netbrain-beacon/internal/api"
-	"github.com/secra/netbrain-beacon/internal/enroll"
+	"github.com/velonet/netbrain-beacon/internal/api"
+	"github.com/velonet/netbrain-beacon/internal/enroll"
 )
 
 // runEnroll implements the `netbrain-beacon enroll ...` subcommand.

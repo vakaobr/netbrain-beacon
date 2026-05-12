@@ -22,7 +22,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/secra/netbrain-beacon/internal/enroll"
+	"github.com/velonet/netbrain-beacon/internal/enroll"
 )
 
 // checkPKI bundles the artifacts a CheckServer test needs: a CA-signed

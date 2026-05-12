@@ -18,11 +18,11 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 
-	"github.com/secra/netbrain-beacon/internal/api"
-	"github.com/secra/netbrain-beacon/internal/collectors"
-	bcrypto "github.com/secra/netbrain-beacon/internal/crypto"
-	"github.com/secra/netbrain-beacon/internal/store"
-	"github.com/secra/netbrain-beacon/internal/transport"
+	"github.com/velonet/netbrain-beacon/internal/api"
+	"github.com/velonet/netbrain-beacon/internal/collectors"
+	bcrypto "github.com/velonet/netbrain-beacon/internal/crypto"
+	"github.com/velonet/netbrain-beacon/internal/store"
+	"github.com/velonet/netbrain-beacon/internal/transport"
 )
 
 // Errors surfaced by Sender.

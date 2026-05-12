@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/secra/netbrain-beacon/internal/api"
+	"github.com/velonet/netbrain-beacon/internal/api"
 )
 
 // Errors surfaced by the enrollment orchestrator.

@@ -19,7 +19,7 @@
 Establish the Go module, repo layout, CI/lint/test infrastructure, and Docker build. Produce a binary that runs `netbrain-beacon version` and nothing else — proves the toolchain end to end.
 
 ### Tasks
-- [ ] Task 1.1: `go.mod` with `module github.com/secra/netbrain-beacon`, `go 1.26.3`, minimum direct deps stubbed (`testify`, `slog` is stdlib, `prometheus/client_golang`) — `go.mod`, `go.sum`
+- [ ] Task 1.1: `go.mod` with `module github.com/velonet/netbrain-beacon`, `go 1.26.3`, minimum direct deps stubbed (`testify`, `slog` is stdlib, `prometheus/client_golang`) — `go.mod`, `go.sum`
 - [ ] Task 1.2: Repo layout per ADR-077 — `cmd/netbrain-beacon/main.go` (stub printing version), `internal/` empty dirs with `.gitkeep` for the 14 sub-packages enumerated in 03_ARCHITECTURE.md §2
 - [ ] Task 1.3: `.golangci.yml` v2 with `errcheck`, `gosec`, `bodyclose`, `forbidigo`, `staticcheck`, `gocritic`, `revive`; forbidigo rules per ADR-077 (math/rand in crypto/, net.Dial outside safe_dial/, TLS without MinVersion, gzip.decompress, fmt.Errorf with %s for errors)
 - [ ] Task 1.4: `.github/workflows/ci.yml` — matrix `{linux,windows}/amd64`; jobs: lint (golangci-lint), test (`go test -race -coverprofile`), build (cross-compile), govulncheck, license scan

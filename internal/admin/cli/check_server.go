@@ -13,9 +13,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/secra/netbrain-beacon/internal/api"
-	"github.com/secra/netbrain-beacon/internal/enroll"
-	"github.com/secra/netbrain-beacon/internal/transport"
+	"github.com/velonet/netbrain-beacon/internal/api"
+	"github.com/velonet/netbrain-beacon/internal/enroll"
+	"github.com/velonet/netbrain-beacon/internal/transport"
 )
 
 // ServerCheckReport is the server-side cert-status snapshot fetched via

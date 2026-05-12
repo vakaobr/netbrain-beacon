@@ -1,4 +1,4 @@
-module github.com/secra/netbrain-beacon
+module github.com/velonet/netbrain-beacon
 
 go 1.26.3
 

@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/secra/netbrain-beacon/internal/enroll"
-	"github.com/secra/netbrain-beacon/internal/store"
-	"github.com/secra/netbrain-beacon/internal/transport"
+	"github.com/velonet/netbrain-beacon/internal/enroll"
+	"github.com/velonet/netbrain-beacon/internal/store"
+	"github.com/velonet/netbrain-beacon/internal/transport"
 )
 
 // StatusReport is the structured output of `netbrain-beacon status`.

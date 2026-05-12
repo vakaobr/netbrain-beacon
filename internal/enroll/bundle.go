@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/secra/netbrain-beacon/internal/crypto"
+	"github.com/velonet/netbrain-beacon/internal/crypto"
 )
 
 // Errors surfaced by bundle parsing.

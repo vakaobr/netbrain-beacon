@@ -1,6 +1,6 @@
 [Unit]
 Description=NetBrain beacon — customer-edge telemetry collector
-Documentation=https://github.com/secra/netbrain-beacon/blob/main/docs/runbooks/beacon-operations.md
+Documentation=https://github.com/velonet/netbrain-beacon/blob/main/docs/runbooks/beacon-operations.md
 After=network-online.target
 Wants=network-online.target
 

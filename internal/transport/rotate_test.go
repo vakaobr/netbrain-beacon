@@ -25,7 +25,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/secra/netbrain-beacon/internal/api"
+	"github.com/velonet/netbrain-beacon/internal/api"
 )
 
 // rotateFixture bundles everything a rotate test needs: a state dir

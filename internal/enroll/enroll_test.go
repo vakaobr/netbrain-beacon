@@ -24,8 +24,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/secra/netbrain-beacon/internal/api"
-	bcrypto "github.com/secra/netbrain-beacon/internal/crypto"
+	"github.com/velonet/netbrain-beacon/internal/api"
+	bcrypto "github.com/velonet/netbrain-beacon/internal/crypto"
 )
 
 // integrationPKI returns an ECDSA-P-256 platform CA + a server cert signed
