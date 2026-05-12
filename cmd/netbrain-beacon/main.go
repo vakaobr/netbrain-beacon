@@ -24,7 +24,7 @@ func main() {
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 2 {
 		_, _ = fmt.Fprintln(stderr, "usage: netbrain-beacon <subcommand>")
-		_, _ = fmt.Fprintln(stderr, "subcommands: version, enroll")
+		_, _ = fmt.Fprintln(stderr, "subcommands: version, enroll, daemon, status, collectors, logs")
 		return 2
 	}
 
@@ -34,6 +34,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "enroll":
 		return runEnroll(args[2:], stdout, stderr)
+	case "daemon":
+		return runDaemon(args[2:], stdout, stderr)
+	case "status":
+		return runStatus(args[2:], stdout, stderr)
+	case "collectors":
+		return runCollectors(args[2:], stdout, stderr)
+	case "logs":
+		return runLogs(args[2:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown subcommand: %s\n", args[1])
 		return 2

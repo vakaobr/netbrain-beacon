@@ -1,0 +1,48 @@
+[Unit]
+Description=NetBrain beacon — customer-edge telemetry collector
+Documentation=https://github.com/secra/netbrain-beacon/blob/main/docs/runbooks/beacon-operations.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/netbrain-beacon daemon --state-dir=/var/lib/netbrain-beacon
+
+# State + logs
+WorkingDirectory=/var/lib/netbrain-beacon
+StateDirectory=netbrain-beacon
+StateDirectoryMode=0700
+LogsDirectory=netbrain-beacon
+
+# Restart policy
+Restart=on-failure
+RestartSec=15s
+StartLimitIntervalSec=300s
+StartLimitBurst=5
+
+# Privileges + sandbox (M-9 + general hardening)
+User=netbrain-beacon
+Group=netbrain-beacon
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/netbrain-beacon /var/log/netbrain-beacon
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @debug
+
+# Network port 514 binding (syslog) — operators uncomment when enabling.
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
+# CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
