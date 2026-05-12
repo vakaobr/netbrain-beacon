@@ -30,3 +30,18 @@ func TestRunUnknownSubcommand(t *testing.T) {
 	require.Equal(t, 2, code)
 	require.Contains(t, stderr.String(), "unknown subcommand")
 }
+
+func TestRunStartStopRestartRedirects(t *testing.T) {
+	// Operators who reflex-type `start` / `stop` / `restart` get a hint
+	// pointing at systemctl + docker + foreground modes.
+	for _, cmd := range []string{"start", "stop", "restart"} {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"netbrain-beacon", cmd}, &stdout, &stderr)
+		require.Equal(t, 2, code)
+		require.Empty(t, stdout.String())
+		out := stderr.String()
+		require.Contains(t, out, "OS service manager")
+		require.Contains(t, out, "systemctl "+cmd+" netbrain-beacon")
+		require.Contains(t, out, "docker "+cmd)
+	}
+}

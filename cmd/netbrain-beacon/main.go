@@ -42,6 +42,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCollectors(args[2:], stdout, stderr)
 	case "logs":
 		return runLogs(args[2:], stdout, stderr)
+	case "start", "stop", "restart":
+		// Operators reach for these by reflex from other CLIs. Redirect
+		// to the platform's service manager — we intentionally don't
+		// implement daemonization in the binary (the OS does it better).
+		_, _ = fmt.Fprintf(stderr, "netbrain-beacon: lifecycle is managed by the OS service manager, not the binary.\n")
+		_, _ = fmt.Fprintf(stderr, "  Linux (systemd):  sudo systemctl %s netbrain-beacon\n", args[1])
+		_, _ = fmt.Fprintf(stderr, "  Docker:           docker %s <container>\n", args[1])
+		_, _ = fmt.Fprintf(stderr, "  Foreground (dev): ./netbrain-beacon daemon  (Ctrl-C to stop)\n")
+		_, _ = fmt.Fprintf(stderr, "  See docs/runbooks/beacon-operations.md for full install + lifecycle steps.\n")
+		return 2
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown subcommand: %s\n", args[1])
 		return 2
