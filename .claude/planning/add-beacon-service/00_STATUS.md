@@ -1,6 +1,6 @@
 # Status: add-beacon-service
 
-**Risk:** High | **Updated:** 2026-05-10
+**Risk:** High | **Updated:** 2026-05-12 (WORKFLOW COMPLETE)
 **Stack:** Go 1.26.3 (latest stable) / Docker (planned) / GitHub Actions (planned) — greenfield repo
 
 ## Progress
@@ -25,9 +25,10 @@
 - [x] Hardening (7a remediation) - Completed (2026-05-12): **ALL 7 findings closed** (user opted in to full fix sweep rather than P3-defer). SY-1 syslog TCP per-line cap via `bufio.Scanner` (256 KiB default, drop-on-overrun, counter). SY-2 syslog TCP listener semaphore at `MaxTCPConnections` (256 default). SY-3 syslog worker per-message panic-recover (introduced internal `putter` interface for testability). S-1 `enroll --bundle-file <path>` alternative + ps-leak warning when `--bundle` used + perm warning when file mode > 0600. M-1 metrics `non_loopback_bind` WARN with structured slog fields. T-1 `transport.LoadCertPairWithRecovery` walks live → .new → .prev slots, promoting on fallback success. ST-1 host-trust documented in runbook §"Security model" + ADR-002. ~270 LOC code + ~210 LOC test. All 17 packages green; new regression tests: 11 (4 SY-1, 1 SY-2, 1 SY-3, 4 S-1, 4 M-1, 7 T-1). See 08_HARDEN_PLAN.md. **Phase 7a verdict upgraded: ⚠ CONDITIONAL PASS → ✓ PASS.**
 - [ ] Security (7b pentest) - Not started — staging-dependent; co-test with add-multi-mode-ingestion per pending_beacon_pentest.md. Gated on Track B Stage 3 (staging mTLS port live) — scheduled as the Stage 2 gate in the 09_DEPLOY_PLAN.
 - [x] Deploy (planned) - Completed (2026-05-12): 09_DEPLOY_PLAN.md written. Strategy = customer-installed binary with two-track interlock: **Track A** (beacon: rc → canary → stable Docker tag promotion + 6 distribution artifacts) and **Track B** (platform: add-multi-mode-ingestion Stages 2 → 3 → 4). Earliest schedule: Day 0 Stage 0 dogfood (3 internal hosts, 72h burn-in against staging), Day 3 Stage 1 canary publication, Day 10-17 Phase 7b pentest gate, Day 17 stable promotion. Per-host + fleet-wide rollback playbooks documented including a hotfix-version-bump strategy for already-shipped deb/rpm. Smoke tests + 24h watch list + 30d watch list per stage. No database migration on the beacon side; bbolt schema_version=1 with no migration tooling yet (reserved). Risk register: 5 entries with mitigations. CHANGELOG.md + customer release notes + internal announcement + status-page template drafted.
-- [ ] Observe - Not started
-- [ ] Observe - Not started
-- [ ] Retro - Not started
+- [x] Observe - Completed (2026-05-12): 10_OBSERVABILITY.md written. RED metrics formalized for 5 RPC paths (enrollment, config-poll, heartbeat, data-send, cert-rotation). USE metrics for store/CPU/memory/syslog. Structured log event catalogue: 8 subsystems, 40+ event definitions, redaction contract. 15 Alertmanager rules (5 P1, 7 P2, 3 P3) with runbook anchors. 4-row Grafana dashboard spec (health/data-pipeline/security/infrastructure). 8 SLI/SLO definitions. 6 follow-up Prometheus instruments identified (syslog Stats(), store corruption, sender re-enroll, DEK rotation timestamp). Loki LogQL rules for pre-promotion log-based alerts.
+- [x] Retro - Completed (2026-05-12): 11_RETROSPECTIVE.md written. 14 technical learnings flushed to netbrain/.claude/LEARNINGS.md + abbreviated to root CLAUDE.md (replacing 2026-05-01 beacon-protocol-and-enrollment block per 2-block recency rule). Beacon-local `.claude/LEARNINGS.md` created. Auto-memory updated: learnings.md + MEMORY.md session note + decisions.md (two-track deploy). Pending follow-ups carried forward: Phase 7b pentest (staging gate), F-1/F-2/F-3/F-6, three collector implementations, fleet exporter, syslog metrics promotion.
+
+## Status: ✅ WORKFLOW COMPLETE
 
 ## Detected Stack
 
@@ -139,6 +140,8 @@ After this issue's `/deploy-plan`, run `/security/pentest add-beacon-service` co
 - 07a_SECURITY_AUDIT.md
 - 08_HARDEN_PLAN.md
 - 09_DEPLOY_PLAN.md
+- 10_OBSERVABILITY.md
+- 11_RETROSPECTIVE.md
 
 ## Charter
 
