@@ -32,8 +32,11 @@ beacon-state.bbolt*
 enrollment-metadata.json
 etag.txt
 
-# Generated code (regenerated via `make generate`)
-internal/api/zz_generated.go
+# Generated code (regenerated via `make generate`) — committed for hermetic CI.
+# CI does not have access to the netbrain repo's OpenAPI spec, so the generated
+# client is checked in. Run `make generate` after any spec change in the
+# netbrain repo, then commit the regenerated file.
+# internal/api/zz_generated.go  # intentionally tracked
 
 # OS
 .DS_Store
