@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -40,6 +39,19 @@ const (
 	DefaultUDPListen    = ":514"
 	DefaultTCPListen    = ":514"
 	DefaultReadDeadline = 30 * time.Second
+
+	// DefaultMaxLineBytes caps a single syslog line on a TCP connection.
+	// 256 KiB comfortably covers extreme RFC 5424 messages while bounding
+	// per-connection memory growth. Security: CWE-770 — prevents the
+	// unbounded buffer-growth DoS in /security audit SY-1 (07a §1.7).
+	DefaultMaxLineBytes = 256 * 1024
+
+	// DefaultMaxTCPConnections caps concurrent TCP listener accepts.
+	// 256 covers a realistic multi-device customer LAN; beyond that, an
+	// attacker (or misconfigured device storm) would otherwise exhaust
+	// goroutines + buffers. Security: CWE-770 — closes /security audit
+	// SY-2 (07a §1.7).
+	DefaultMaxTCPConnections = 256
 )
 
 // Config bundles the listener tunables. Zero values inherit the defaults.
@@ -54,10 +66,26 @@ type Config struct {
 	Workers int
 	// QueueDepth bounds the listener → worker channel. Zero → DefaultQueueDepth.
 	QueueDepth int
+	// MaxLineBytes caps the per-line read size on each TCP connection.
+	// Zero → DefaultMaxLineBytes. A connection sending a longer line is
+	// dropped and Stats().OversizedDropped increments. SY-1 hardening.
+	MaxLineBytes int
+	// MaxTCPConnections caps concurrent TCP listener accepts. Zero →
+	// DefaultMaxTCPConnections. Beyond this cap, a new accept is closed
+	// immediately and Stats().ConnsRejected increments. SY-2 hardening.
+	MaxTCPConnections int
 	// Store is the bbolt store the workers write to. Required.
 	Store *store.Store
 	// Logger is the structured logger for collector events. Nil → slog.Default().
 	Logger *slog.Logger
+}
+
+// putter is the minimal Store interface the worker needs. Lets tests
+// inject a fake Put that returns an error or panics, without depending
+// on the concrete *store.Store. *store.Store satisfies this interface
+// naturally — no production change.
+type putter interface {
+	Put(bucket store.Bucket, payload []byte) ([]byte, error)
 }
 
 // Server is the running syslog collector. Build via NewServer; lifecycle
@@ -66,6 +94,10 @@ type Config struct {
 type Server struct {
 	cfg Config
 	log *slog.Logger
+
+	// put is the Store handle the worker actually calls. Defaults to
+	// cfg.Store at NewServer time; tests can swap it via SetPutterForTest.
+	put putter
 
 	queue chan []byte
 
@@ -77,11 +109,14 @@ type Server struct {
 
 	// Counters surfaced via Stats(); reset never (cumulative for the
 	// daemon's lifetime).
-	rxTotal     atomic.Int64
-	parseFails  atomic.Int64
-	droppedFull atomic.Int64
-	persisted   atomic.Int64
-	persistFail atomic.Int64
+	rxTotal         atomic.Int64
+	parseFails      atomic.Int64
+	droppedFull     atomic.Int64
+	persisted       atomic.Int64
+	persistFail     atomic.Int64
+	oversizedDrop   atomic.Int64 // SY-1: TCP lines past MaxLineBytes
+	connsRejected   atomic.Int64 // SY-2: TCP accepts past MaxTCPConnections
+	workerPanics    atomic.Int64 // SY-3: panics recovered in worker
 }
 
 // Errors surfaced by NewServer / Start.
@@ -97,14 +132,19 @@ var (
 
 // Stats is the operator-facing snapshot of the server's lifetime counters.
 type Stats struct {
-	Received      int64
-	Persisted     int64
-	ParseFailed   int64
-	PersistFailed int64
-	DroppedFull   int64
-	WorkerCount   int
-	QueueCap      int
-	QueueDepthNow int
+	Received         int64
+	Persisted        int64
+	ParseFailed      int64
+	PersistFailed    int64
+	DroppedFull      int64
+	OversizedDropped int64 // SY-1
+	ConnsRejected    int64 // SY-2
+	WorkerPanics     int64 // SY-3
+	WorkerCount      int
+	QueueCap         int
+	QueueDepthNow    int
+	MaxLineBytes     int
+	MaxTCPConns      int
 }
 
 // NewServer constructs a Server with defaults applied. Doesn't start any
@@ -119,15 +159,26 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.QueueDepth == 0 {
 		cfg.QueueDepth = DefaultQueueDepth
 	}
+	if cfg.MaxLineBytes == 0 {
+		cfg.MaxLineBytes = DefaultMaxLineBytes
+	}
+	if cfg.MaxTCPConnections == 0 {
+		cfg.MaxTCPConnections = DefaultMaxTCPConnections
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
 	return &Server{
 		cfg:   cfg,
 		log:   cfg.Logger,
+		put:   cfg.Store,
 		queue: make(chan []byte, cfg.QueueDepth),
 	}, nil
 }
+
+// SetPutterForTest replaces the store handle the worker uses. Test-only;
+// production callers leave the default (Config.Store).
+func (s *Server) SetPutterForTest(p putter) { s.put = p }
 
 // Start opens the configured listeners + spawns the worker pool. Returns
 // without blocking; the listeners run in their own goroutines and exit
@@ -191,14 +242,19 @@ func (s *Server) Close() error {
 // Stats returns a snapshot of the server's counters.
 func (s *Server) Stats() Stats {
 	return Stats{
-		Received:      s.rxTotal.Load(),
-		Persisted:     s.persisted.Load(),
-		ParseFailed:   s.parseFails.Load(),
-		PersistFailed: s.persistFail.Load(),
-		DroppedFull:   s.droppedFull.Load(),
-		WorkerCount:   s.cfg.Workers,
-		QueueCap:      s.cfg.QueueDepth,
-		QueueDepthNow: len(s.queue),
+		Received:         s.rxTotal.Load(),
+		Persisted:        s.persisted.Load(),
+		ParseFailed:      s.parseFails.Load(),
+		PersistFailed:    s.persistFail.Load(),
+		DroppedFull:      s.droppedFull.Load(),
+		OversizedDropped: s.oversizedDrop.Load(),
+		ConnsRejected:    s.connsRejected.Load(),
+		WorkerPanics:     s.workerPanics.Load(),
+		WorkerCount:      s.cfg.Workers,
+		QueueCap:         s.cfg.QueueDepth,
+		QueueDepthNow:    len(s.queue),
+		MaxLineBytes:     s.cfg.MaxLineBytes,
+		MaxTCPConns:      s.cfg.MaxTCPConnections,
 	}
 }
 
@@ -248,8 +304,13 @@ func (s *Server) udpLoop(ctx context.Context) {
 
 // tcpLoop accepts TCP connections. Each connection is a stream of
 // line-delimited (or octet-counted) syslog messages.
+//
+// Security: CWE-770 — accepts past MaxTCPConnections are closed
+// immediately so the listener cannot be goroutine-exhausted by a flood
+// of concurrent connections (SY-2 hardening, /security audit 07a §1.7).
 func (s *Server) tcpLoop(ctx context.Context) {
 	defer s.wg.Done()
+	sem := make(chan struct{}, s.cfg.MaxTCPConnections)
 	for {
 		if ctx.Err() != nil {
 			return
@@ -262,8 +323,20 @@ func (s *Server) tcpLoop(ctx context.Context) {
 			s.log.Warn("syslog.tcp_accept_err", slog.String("err", err.Error()))
 			continue
 		}
-		s.wg.Add(1)
-		go s.handleTCPConn(ctx, conn)
+		select {
+		case sem <- struct{}{}:
+			s.wg.Add(1)
+			go func(c net.Conn) {
+				defer func() { <-sem }()
+				s.handleTCPConn(ctx, c)
+			}(conn)
+		default:
+			// At-cap: refuse the new connection rather than queue. The
+			// goroutine + buffer growth past the cap is the threat, not
+			// queue-depth latency.
+			s.connsRejected.Add(1)
+			_ = conn.Close()
+		}
 	}
 }
 
@@ -271,52 +344,98 @@ func (s *Server) tcpLoop(ctx context.Context) {
 // line-delimited framing (most common); octet-counting framing not
 // supported in v1 (devices that use it are rare and the operator can
 // configure a syslog relay).
+//
+// Security: CWE-770 — uses bufio.Scanner with a bounded buffer instead
+// of bufio.Reader.ReadBytes, which would grow unbounded waiting for a
+// '\n' that may never arrive. Lines past MaxLineBytes are dropped and
+// counted (SY-1 hardening, /security audit 07a §1.7).
 func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 	defer s.wg.Done()
 	defer func() { _ = conn.Close() }()
-	r := bufio.NewReaderSize(conn, 64*1024)
+
+	sc := bufio.NewScanner(conn)
+	// Initial buffer: min(64 KiB, MaxLineBytes). Clamping to MaxLineBytes
+	// is essential — Scanner only fires ErrTooLong when the buffer fills
+	// AND its length is already >= maxTokenSize. If initial > max, the
+	// scanner would find '\n' inside a slack buffer before any growth
+	// check, bypassing the cap (caught by TestTCPLineCapDropsOversizedLine).
+	initial := 64 * 1024
+	if s.cfg.MaxLineBytes < initial {
+		initial = s.cfg.MaxLineBytes
+	}
+	sc.Buffer(make([]byte, initial), s.cfg.MaxLineBytes)
+
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(DefaultReadDeadline))
-		line, err := r.ReadBytes('\n')
-		if len(line) > 0 {
-			s.SubmitRaw(trimNewline(line))
+		if !sc.Scan() {
+			break
 		}
-		if err == io.EOF {
+		// sc.Bytes() points into the scanner's internal buffer — copy
+		// inside SubmitRaw so the next Scan call doesn't clobber it.
+		s.SubmitRaw(sc.Bytes())
+	}
+	if err := sc.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			s.oversizedDrop.Add(1)
+			s.log.Warn("syslog.tcp_line_too_long",
+				slog.Int("max_line_bytes", s.cfg.MaxLineBytes),
+				slog.String("remote", conn.RemoteAddr().String()))
 			return
 		}
-		if err != nil {
-			if isTimeout(err) {
-				continue
-			}
+		if isTimeout(err) || isClosed(err) {
 			return
 		}
+		// EOF is normal connection close (Scanner masks it as nil); any
+		// remaining error is a transport error we don't need to log
+		// (deadline-driven, peer reset, etc.).
 	}
 }
 
 // worker pulls raw messages off the queue, parses + persists each.
+//
+// Security: CWE-754 — per-message panic-recover so a parser-bug panic
+// (in leodido's RFC parsers or json.Marshal) cannot terminate the whole
+// pool. Recovered panic is logged + counted and the worker continues
+// (SY-3 hardening, /security audit 07a §1.7).
 func (s *Server) worker(_ context.Context) {
 	defer s.wg.Done()
 	for raw := range s.queue {
-		parsed := parseSyslog(raw)
-		if parsed == nil {
-			s.parseFails.Add(1)
-			continue
-		}
-		blob, err := json.Marshal(parsed)
-		if err != nil {
-			s.parseFails.Add(1)
-			continue
-		}
-		if _, err := s.cfg.Store.Put(store.BucketLogs, blob); err != nil {
-			s.persistFail.Add(1)
-			s.log.Warn("syslog.persist_err", slog.String("err", err.Error()))
-			continue
-		}
-		s.persisted.Add(1)
+		s.processOne(raw)
 	}
+}
+
+// processOne is the per-message body extracted from worker so the panic
+// recover scope is tight to ONE message — a panicking input doesn't
+// taint other in-flight processing.
+func (s *Server) processOne(raw []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.workerPanics.Add(1)
+			s.log.Error("syslog.worker_panic",
+				slog.Any("recover", r),
+				slog.Int("raw_len", len(raw)))
+		}
+	}()
+
+	parsed := parseSyslog(raw)
+	if parsed == nil {
+		s.parseFails.Add(1)
+		return
+	}
+	blob, err := json.Marshal(parsed)
+	if err != nil {
+		s.parseFails.Add(1)
+		return
+	}
+	if _, err := s.put.Put(store.BucketLogs, blob); err != nil {
+		s.persistFail.Add(1)
+		s.log.Warn("syslog.persist_err", slog.String("err", err.Error()))
+		return
+	}
+	s.persisted.Add(1)
 }
 
 // parseSyslog tries RFC 5424 first, falls back to RFC 3164. Returns nil

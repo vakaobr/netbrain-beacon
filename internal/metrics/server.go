@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -18,6 +20,9 @@ const DefaultBindAddr = "127.0.0.1:9090"
 // Start (non-blocking) + Close (graceful shutdown via http.Server.Shutdown).
 type Server struct {
 	BindAddr string
+	// Logger receives the M-1 non-loopback warning at Start time. Defaults
+	// to slog.Default() when nil.
+	Logger   *slog.Logger
 	srv      *http.Server
 	listener net.Listener
 }
@@ -35,12 +40,30 @@ func NewServer(addr string) *Server {
 // server. Returns the error from net.Listen if the bind fails;
 // otherwise nil. Errors from Serve (post-listener-open) are logged via
 // the caller's recovery path — Start doesn't block.
+//
+// Security: CWE-200 — emits a WARN log when the bind address is
+// non-loopback. /metrics + /healthz are unauthenticated; exposing them
+// to a LAN with no TLS+auth in front is an information-disclosure
+// surface (beacon ID, version, internal counters). M-1 hardening,
+// /security audit 07a §1.10.
 func (s *Server) Start(_ context.Context) error {
 	ln, err := net.Listen("tcp", s.BindAddr)
 	if err != nil {
 		return fmt.Errorf("metrics: bind %s: %w", s.BindAddr, err)
 	}
 	s.listener = ln
+
+	if !isLoopbackBind(s.BindAddr) {
+		log := s.Logger
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("metrics.non_loopback_bind",
+			slog.String("addr", s.BindAddr),
+			slog.String("risk", "unauthenticated_metrics_exposed"),
+			slog.String("guidance",
+				"front with TLS+auth (nginx, traefik) or restrict via firewall before exposing publicly"))
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
@@ -68,6 +91,42 @@ func (s *Server) Addr() string {
 		return s.BindAddr
 	}
 	return s.listener.Addr().String()
+}
+
+// isLoopbackBind reports whether addr binds to a loopback interface
+// only (127.0.0.0/8 for v4, ::1 for v6). A bind to 0.0.0.0 / [::] / a
+// public IP or hostname returns false. Used by Start to gate the M-1
+// non-loopback warning.
+//
+// The host portion may be a literal IP, a hostname, an empty string
+// (rare — defaults to 0.0.0.0), or an IPv6 literal in brackets. The
+// helper handles all four.
+func isLoopbackBind(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Couldn't split — treat as non-loopback (fail-open warning).
+		return false
+	}
+	switch host {
+	case "":
+		// Empty host with explicit port defaults to ALL interfaces.
+		return false
+	case "localhost":
+		return true
+	}
+	// Strip an IPv6 zone identifier (e.g., "fe80::1%eth0") that
+	// net.ParseIP would reject. The zone doesn't affect loopback-ness.
+	if i := strings.IndexByte(host, '%'); i >= 0 {
+		host = host[:i]
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// Hostname (not "localhost") — treat as non-loopback. An
+		// operator who points DNS at 127.0.0.1 still gets the warning,
+		// which is the conservative behavior.
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 // Close stops the HTTP server gracefully. Returns nil if Server was

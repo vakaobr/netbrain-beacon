@@ -19,16 +19,27 @@ import (
 //
 // Flags:
 //
-//	--bundle <b64>       (required) base64-encoded signed enrollment bundle
+//	--bundle <b64>       base64-encoded signed enrollment bundle (mutually
+//	                     exclusive with --bundle-file; PREFER --bundle-file
+//	                     in production — see Security note below)
+//	--bundle-file <path> path to a file holding the base64 bundle. Reading
+//	                     from disk avoids leaking the bootstrap token into
+//	                     `ps`, shell history, audit logs (CWE-214, S-1).
 //	--server-url <url>   (required) https://<platform-host>:8443
 //	--state-dir <path>   override default state-dir (see defaultStateDir)
 //	--force              overwrite an existing enrollment in state-dir
 //	--allow-unsigned     accept an unsigned bundle (DEV ONLY)
+//
+// Security: CWE-214 — the bootstrap token is a short-lived secret
+// (24h expiry, one-time-use). Passing it via --bundle puts the token
+// in `ps auxw`, shell history, and audit logs. Use --bundle-file with
+// a file mode of 0600 in production.
 func runEnroll(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("enroll", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		bundleB64        = fs.String("bundle", "", "base64-encoded enrollment bundle (required)")
+		bundleB64        = fs.String("bundle", "", "base64-encoded enrollment bundle (use --bundle-file in production to avoid leaking via ps)")
+		bundleFile       = fs.String("bundle-file", "", "path to a file holding the base64-encoded bundle (recommended over --bundle)")
 		serverURL        = fs.String("server-url", "", "platform URL, e.g. https://platform.example.com:8443 (required)")
 		stateDir         = fs.String("state-dir", defaultStateDir(), "directory to persist enrollment artifacts")
 		force            = fs.Bool("force", false, "overwrite existing enrollment in state-dir")
@@ -40,14 +51,23 @@ func runEnroll(args []string, stdout, stderr io.Writer) int {
 		// flag package already printed usage on its own writer.
 		return 2
 	}
-	if *bundleB64 == "" || *serverURL == "" {
-		_, _ = fmt.Fprintln(stderr, "enroll: --bundle and --server-url are required")
+
+	// Mutually-exclusive bundle source: exactly ONE of --bundle / --bundle-file
+	// must be supplied. The CLI loads the bundle string into bundleStr.
+	bundleStr, srcErr := readBundleArg(*bundleB64, *bundleFile, stderr)
+	if srcErr != nil {
+		_, _ = fmt.Fprintf(stderr, "enroll: %v\n", srcErr)
+		fs.Usage()
+		return 2
+	}
+	if *serverURL == "" {
+		_, _ = fmt.Fprintln(stderr, "enroll: --server-url is required")
 		fs.Usage()
 		return 2
 	}
 
 	// 1) Parse + verify the bundle.
-	bundle, err := enroll.ParseBundle(*bundleB64, *allowUnsigned)
+	bundle, err := enroll.ParseBundle(bundleStr, *allowUnsigned)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "enroll: bundle rejected: %v\n", err)
 		return 1
@@ -125,6 +145,56 @@ func defaultStateDir() string {
 	default:
 		return "/var/lib/netbrain-beacon"
 	}
+}
+
+// readBundleArg resolves the bundle source flags. Exactly one of
+// --bundle or --bundle-file must be set. When loading from a file, the
+// helper emits a stderr warning if the file's mode allows other users
+// to read it (mode & 0o077 != 0) — defense-in-depth so an operator who
+// chmod 0644 their bundle file gets a visible heads-up.
+//
+// Security (S-1, CWE-214): the file path avoids leaking the bootstrap
+// token to `ps`, shell history, and audit logs. We don't enforce mode
+// 0600 hard (Windows ACLs make a unix-bit check unreliable there); we
+// warn but proceed.
+func readBundleArg(bundle, bundleFile string, stderr io.Writer) (string, error) {
+	if bundle == "" && bundleFile == "" {
+		return "", errors.New("--bundle or --bundle-file is required")
+	}
+	if bundle != "" && bundleFile != "" {
+		return "", errors.New("--bundle and --bundle-file are mutually exclusive; use one or the other")
+	}
+	if bundle != "" {
+		// Best-effort hint: if stderr looks like a terminal, surface the
+		// guidance that --bundle leaks to ps. We don't gate on isatty
+		// (no extra deps); the line is short and harmless in pipelines.
+		_, _ = fmt.Fprintln(stderr,
+			"enroll: WARNING — --bundle leaks the bootstrap token to `ps`/history/audit logs;",
+			"prefer --bundle-file in production")
+		return bundle, nil
+	}
+
+	// --bundle-file path. Check perms BEFORE reading so we can warn
+	// even when the bytes turn out to be invalid base64 (which the
+	// downstream ParseBundle catches).
+	if runtime.GOOS != "windows" {
+		if info, statErr := os.Stat(bundleFile); statErr == nil {
+			if info.Mode().Perm()&0o077 != 0 {
+				_, _ = fmt.Fprintf(stderr,
+					"enroll: WARNING — bundle file %s is mode %#o (group/other readable);"+
+						" set mode 0600 to protect the bootstrap token\n",
+					bundleFile, info.Mode().Perm())
+			}
+		}
+	}
+	raw, err := os.ReadFile(bundleFile) //nolint:gosec // operator-supplied path
+	if err != nil {
+		return "", fmt.Errorf("read --bundle-file %s: %w", bundleFile, err)
+	}
+	// Trim surrounding whitespace so `echo "<b64>" > /tmp/bundle.txt`
+	// produces a valid bundle (the newline is harmless to ParseBundle
+	// today but the inconsistency would surprise operators).
+	return strings.TrimSpace(string(raw)), nil
 }
 
 // beaconOS maps runtime.GOOS to the OpenAPI BeaconMetadataOs enum.

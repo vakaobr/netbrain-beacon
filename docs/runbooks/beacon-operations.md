@@ -40,7 +40,23 @@ under a Windows service wrapper (e.g., `nssm` or
 1. The NetBrain platform admin generates an enrollment bundle for the
    tenant and shares the base64 string with the beacon operator
    (out-of-band; the bundle expires in 24 h).
-2. The operator runs:
+2. The operator runs. **Use `--bundle-file` in production** — passing
+   `--bundle <b64>` puts the bootstrap token in `ps`, shell history, and
+   audit logs (S-1 / CWE-214). The token is short-lived but defense in
+   depth says don't leak it:
+
+   ```bash
+   # Production form: read from a 0600 file, then delete the file.
+   echo '<base64-bundle>' > /tmp/beacon-bundle.b64
+   chmod 0600 /tmp/beacon-bundle.b64
+   sudo -u netbrain-beacon netbrain-beacon enroll \
+     --bundle-file /tmp/beacon-bundle.b64 \
+     --server-url 'https://platform.example.com:8443' \
+     --state-dir /var/lib/netbrain-beacon
+   shred -u /tmp/beacon-bundle.b64    # or rm; the bundle is now consumed
+   ```
+
+   Dev / one-off form (NOT recommended for prod):
 
    ```bash
    sudo -u netbrain-beacon netbrain-beacon enroll \
@@ -183,6 +199,58 @@ sudo -u netbrain-beacon netbrain-beacon enroll \
 
 sudo systemctl start netbrain-beacon
 ```
+
+## Security model: host trust assumptions
+
+The beacon's threat model assumes the host it runs on is operator-trusted.
+Specifically:
+
+- **Buffered telemetry is plaintext at rest in bbolt** (per ADR-002 /
+  netbrain ADR-078). Records are only encrypted at SEND time (AES-GCM
+  envelope). A local-root attacker on the beacon host can read
+  buffered logs/flows/SNMP/configs between collection and egress
+  (ST-1 — documented architectural choice, NOT a defect).
+
+- **Private key + DEK live in /var/lib/netbrain-beacon at mode 0600**,
+  but root on the host can read them. Cert rotation auto-rotates at
+  80% lifetime to bound the impact of an exfiltrated key.
+
+- **Bootstrap token survives in shell history / `ps` if you used
+  `--bundle <b64>` instead of `--bundle-file`.** The token is one-time-use
+  and 24h-expiry, but defense-in-depth says use `--bundle-file
+  /path/to/bundle.b64` (mode 0600) in production.
+
+### Hardening guidance for low-trust hosts
+
+If the beacon runs on a host where you do NOT fully trust root (e.g.,
+an MSP shared multi-tenant box, an air-gapped lab passed between teams),
+add at least:
+
+1. **Full-disk encryption** on the state-dir filesystem (LUKS, dm-crypt,
+   BitLocker). Closes the offline-disk-extraction vector for the bbolt
+   file + private key.
+2. **Read-only root partition** with `/var/lib/netbrain-beacon` on a
+   separate encrypted volume. The systemd unit already pins
+   `ProtectSystem=strict` so the beacon process can't write outside
+   its allowlist.
+3. **SELinux / AppArmor profile** confining the `netbrain-beacon`
+   binary to its state-dir + the platform's TCP endpoint. Distro
+   packagers should ship a default profile; example skeleton in
+   `packaging/selinux/netbrain_beacon.te`.
+4. **Audit-log monitoring** for `execve` of `netbrain-beacon enroll`
+   with `--bundle ` flag (catches operators bypassing the CLI hygiene
+   guidance).
+
+### Metrics endpoint security (M-1)
+
+`--metrics-bind` defaults to `127.0.0.1:9090` (loopback-only).
+Exposing `/metrics` and `/healthz` to a LAN requires a TLS+auth
+terminator in front (nginx, traefik, oauth2-proxy) — they are
+unauthenticated by design. The daemon emits
+`metrics.non_loopback_bind` at WARN level when bound to a non-loopback
+address. Production deployments that scrape from a Prometheus on a
+different host should keep the bind loopback-only and run a TLS-front
+sidecar.
 
 ## Recover from corrupt bbolt
 

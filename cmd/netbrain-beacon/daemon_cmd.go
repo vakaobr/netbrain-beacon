@@ -74,6 +74,10 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 	var metricsSrv *metrics.Server
 	if !*noMetrics {
 		metricsSrv = metrics.NewServer(*metricsBind)
+		// Wire the production slog handler so M-1 non-loopback warnings
+		// land in the structured-log stream (not stderr) and trip the
+		// platform's Alertmanager rule on `metrics.non_loopback_bind`.
+		metricsSrv.Logger = logger
 		if err := metricsSrv.Start(context.Background()); err != nil {
 			_, _ = fmt.Fprintf(stderr, "daemon: metrics: %v\n", err)
 			return 1

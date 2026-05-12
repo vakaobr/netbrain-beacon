@@ -1,8 +1,10 @@
 package metrics
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"testing"
 	"time"
@@ -74,4 +76,66 @@ func TestAllRegistered(t *testing.T) {
 func TestSetBuildInfoSetsLabels(t *testing.T) {
 	SetBuildInfo("v1.0", "abc")
 	// We don't inspect the registry directly; just make sure the call doesn't panic.
+}
+
+// --- M-1: non-loopback bind warning (CWE-200) ---
+
+// TestIsLoopbackBindRecognizesLoopback exercises the cases that MUST
+// be treated as loopback (no warning).
+func TestIsLoopbackBindRecognizesLoopback(t *testing.T) {
+	for _, addr := range []string{
+		"127.0.0.1:9090",
+		"127.0.0.1:0",
+		"localhost:9090",
+		"[::1]:9090",
+	} {
+		require.True(t, isLoopbackBind(addr), "loopback case: %s", addr)
+	}
+}
+
+// TestIsLoopbackBindRecognizesNonLoopback exercises the cases that
+// MUST trigger the warning.
+func TestIsLoopbackBindRecognizesNonLoopback(t *testing.T) {
+	for _, addr := range []string{
+		"0.0.0.0:9090",
+		"[::]:9090",
+		"192.168.1.5:9090",
+		"10.0.0.1:9090",
+		":9090", // empty host → all interfaces
+		"example.com:9090",
+	} {
+		require.False(t, isLoopbackBind(addr), "non-loopback case: %s", addr)
+	}
+}
+
+// TestStartEmitsWarnOnNonLoopback verifies the structured warning fires
+// at Start when bound to 0.0.0.0.
+func TestStartEmitsWarnOnNonLoopback(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	s := NewServer("0.0.0.0:0")
+	s.Logger = logger
+	require.NoError(t, s.Start(context.Background()))
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	out := buf.String()
+	require.Contains(t, out, "metrics.non_loopback_bind",
+		"non-loopback bind must emit the structured warning (M-1)")
+	require.Contains(t, out, "unauthenticated_metrics_exposed")
+}
+
+// TestStartSilentOnLoopback verifies the warning does NOT fire on the
+// happy default-bind path — no log noise for the 99% case.
+func TestStartSilentOnLoopback(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	s := NewServer("127.0.0.1:0")
+	s.Logger = logger
+	require.NoError(t, s.Start(context.Background()))
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	require.NotContains(t, buf.String(), "non_loopback_bind",
+		"loopback bind must NOT emit the M-1 warning")
 }

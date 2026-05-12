@@ -105,8 +105,18 @@ Plus:
 - **H-3 log redactor** scrubs `bootstrap_token`, `dek`, `csr_pem`, `Authorization`, and tokens matching `nbb_[A-Za-z0-9_-]{16,}` from every emitted log line.
 - **Cross-language byte-exactness** fixtures (21 cases: 10 UUIDv5 + 5 AES-GCM + 3 ed25519 + 3 canonical-JSON) verify the wire format matches the Python reference implementation in the netbrain repo. CI fails on any drift.
 
-See [ADR-080](.claude/planning/add-beacon-service/03_ADR-080-cross-language-byte-exactness-fixtures.md)
-and [ADR-081](.claude/planning/add-beacon-service/03_ADR-081-ssrf-safe-dial-package.md).
+Hardening pass (07a / /security/harden, 2026-05-12):
+- **SY-1** syslog TCP `bufio.Scanner` with bounded buffer; lines past `MaxLineBytes` (default 256 KiB) are dropped + counted (CWE-770).
+- **SY-2** syslog TCP listener semaphore caps concurrent connections at `MaxTCPConnections` (default 256); over-cap accepts are closed immediately (CWE-770).
+- **SY-3** syslog worker per-message panic-recover (CWE-754).
+- **S-1** `enroll --bundle-file <path>` alternative; runbook recommends this over `--bundle <b64>` to keep the bootstrap token out of `ps` / shell history / audit logs (CWE-214).
+- **M-1** `/metrics` `non_loopback_bind` WARN at startup when `--metrics-bind` exposes the endpoint past 127.0.0.1 (CWE-200).
+- **T-1** `transport.LoadCertPairWithRecovery` falls back through live → .new → .prev slots after a crash mid-rotation.
+- **ST-1** plaintext-at-rest host-trust assumption documented in runbook §"Security model" and ADR-002.
+
+See [docs/ADR/ADR-004](docs/ADR/ADR-004-cross-language-byte-exactness-fixtures.md)
+and [docs/ADR/ADR-005](docs/ADR/ADR-005-ssrf-safe-dial-package.md), plus
+[docs/runbooks/beacon-operations.md §"Security model"](docs/runbooks/beacon-operations.md).
 
 ## Observability
 

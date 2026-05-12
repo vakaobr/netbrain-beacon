@@ -4,6 +4,18 @@
 **Date:** 2026-05-10
 **Context issue:** add-beacon-service
 **Companion:** ADR-071 (parent contract — store-and-forward semantics), ADR-006 (collector goroutine model)
+**Pairs with:** [netbrain/ADR/ADR-078-store-and-forward-bbolt-schema.md](https://github.com/velonet/netbrain/blob/main/ADR/ADR-078-store-and-forward-bbolt-schema.md) — same architectural decision, netbrain canonical numbering.
+
+## Security: plaintext at rest
+
+Records in the bbolt file are stored **plaintext** until the sender
+encrypts them at egress time. A local-root attacker on the beacon host
+can read buffered telemetry. This is a documented architectural choice
+(see runbook §"Security model: host trust assumptions"); the threat
+model assumes the operator trusts root on the beacon host. For low-trust
+hosts, add full-disk encryption + SELinux/AppArmor confinement per the
+runbook's "Hardening guidance for low-trust hosts" section. /security
+audit 07a tracks this as ST-1.
 
 ## Context
 
