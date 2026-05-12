@@ -29,7 +29,7 @@ import (
 	rfc3164 "github.com/leodido/go-syslog/v4/rfc3164"
 	rfc5424 "github.com/leodido/go-syslog/v4/rfc5424"
 
-	"github.com/velonet/netbrain-beacon/internal/store"
+	"github.com/vakaobr/netbrain-beacon/internal/store"
 )
 
 // Defaults match ADR-082's D-6 pool sizing for syslog.

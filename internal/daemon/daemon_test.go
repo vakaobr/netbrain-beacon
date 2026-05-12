@@ -17,9 +17,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/velonet/netbrain-beacon/internal/api"
-	bcrypto "github.com/velonet/netbrain-beacon/internal/crypto"
-	"github.com/velonet/netbrain-beacon/internal/probe"
+	"github.com/vakaobr/netbrain-beacon/internal/api"
+	bcrypto "github.com/vakaobr/netbrain-beacon/internal/crypto"
+	"github.com/vakaobr/netbrain-beacon/internal/probe"
 )
 
 // --- fake server scaffolding ---

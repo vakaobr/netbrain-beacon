@@ -20,11 +20,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/velonet/netbrain-beacon/internal/collectors"
-	"github.com/velonet/netbrain-beacon/internal/collectors/netflow"
-	"github.com/velonet/netbrain-beacon/internal/collectors/snmp"
-	"github.com/velonet/netbrain-beacon/internal/enroll"
-	"github.com/velonet/netbrain-beacon/internal/store"
+	"github.com/vakaobr/netbrain-beacon/internal/collectors"
+	"github.com/vakaobr/netbrain-beacon/internal/collectors/netflow"
+	"github.com/vakaobr/netbrain-beacon/internal/collectors/snmp"
+	"github.com/vakaobr/netbrain-beacon/internal/enroll"
+	"github.com/vakaobr/netbrain-beacon/internal/store"
 )
 
 func TestCollectStatusEmptyDir(t *testing.T) {

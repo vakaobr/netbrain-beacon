@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/velonet/netbrain-beacon/internal/api"
-	"github.com/velonet/netbrain-beacon/internal/metrics"
+	"github.com/vakaobr/netbrain-beacon/internal/api"
+	"github.com/vakaobr/netbrain-beacon/internal/metrics"
 )
 
 // PollResult is the outcome of one poll cycle. Returned for tests +

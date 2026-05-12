@@ -19,8 +19,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/velonet/netbrain-beacon/internal/api"
-	"github.com/velonet/netbrain-beacon/internal/metrics"
+	"github.com/vakaobr/netbrain-beacon/internal/api"
+	"github.com/vakaobr/netbrain-beacon/internal/metrics"
 )
 
 // Errors surfaced by Rotate.

@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	bcrypto "github.com/velonet/netbrain-beacon/internal/crypto"
+	bcrypto "github.com/vakaobr/netbrain-beacon/internal/crypto"
 )
 
 // TestDEKVerifyEmptyDataKeyB64Contract locks in the cross-repo invariant

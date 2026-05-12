@@ -1,4 +1,4 @@
-module github.com/velonet/netbrain-beacon
+module github.com/vakaobr/netbrain-beacon
 
 go 1.26.3
 

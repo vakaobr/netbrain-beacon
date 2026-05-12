@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	bcrypto "github.com/velonet/netbrain-beacon/internal/crypto"
+	bcrypto "github.com/vakaobr/netbrain-beacon/internal/crypto"
 )
 
 // buildBundle is a test helper that mints a fresh ed25519 keypair, signs a

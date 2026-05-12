@@ -15,10 +15,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/velonet/netbrain-beacon/internal/api"
-	"github.com/velonet/netbrain-beacon/internal/collectors"
-	bcrypto "github.com/velonet/netbrain-beacon/internal/crypto"
-	"github.com/velonet/netbrain-beacon/internal/store"
+	"github.com/vakaobr/netbrain-beacon/internal/api"
+	"github.com/vakaobr/netbrain-beacon/internal/collectors"
+	bcrypto "github.com/vakaobr/netbrain-beacon/internal/crypto"
+	"github.com/vakaobr/netbrain-beacon/internal/store"
 )
 
 // fakePlatform records every /data/* hit and lets the test prescribe

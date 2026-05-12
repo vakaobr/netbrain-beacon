@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/http"
 
-	bcrypto "github.com/velonet/netbrain-beacon/internal/crypto"
+	bcrypto "github.com/vakaobr/netbrain-beacon/internal/crypto"
 )
 
 // Errors surfaced by verifyDEKRotationSignature.

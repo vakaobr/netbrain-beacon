@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/velonet/netbrain-beacon/internal/safedial"
+	"github.com/vakaobr/netbrain-beacon/internal/safedial"
 )
 
 // DefaultPorts is the probe order from ADR-072: SSH first (most common

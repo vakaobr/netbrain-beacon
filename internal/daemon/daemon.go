@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/velonet/netbrain-beacon/internal/api"
-	"github.com/velonet/netbrain-beacon/internal/collectors"
-	"github.com/velonet/netbrain-beacon/internal/collectors/sender"
-	"github.com/velonet/netbrain-beacon/internal/metrics"
-	"github.com/velonet/netbrain-beacon/internal/probe"
+	"github.com/vakaobr/netbrain-beacon/internal/api"
+	"github.com/vakaobr/netbrain-beacon/internal/collectors"
+	"github.com/vakaobr/netbrain-beacon/internal/collectors/sender"
+	"github.com/vakaobr/netbrain-beacon/internal/metrics"
+	"github.com/vakaobr/netbrain-beacon/internal/probe"
 )
 
 // Defaults for the daemon's tunables. Production values can be overridden

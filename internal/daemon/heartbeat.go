@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/velonet/netbrain-beacon/internal/api"
-	"github.com/velonet/netbrain-beacon/internal/metrics"
+	"github.com/vakaobr/netbrain-beacon/internal/api"
+	"github.com/vakaobr/netbrain-beacon/internal/metrics"
 )
 
 // heartbeatOnce builds a BeaconHeartbeatRequest from the current daemon
