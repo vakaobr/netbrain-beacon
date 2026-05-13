@@ -40,6 +40,13 @@ make build
 ./bin/netbrain-beacon daemon --state-dir ./state
 ```
 
+**Dev / staging endpoint** (2026-05-13–): `https://netbrain-dev-beacon.andersonleite.me/` —
+a Cloudflare tunnel forwards inbound traffic to the netbrain platform's nginx mTLS
+terminator on host port 8443. Use this as the `--server-url` when testing against
+the dev platform; the platform CA fingerprint is embedded in the enrollment bundle, so
+no extra trust-store setup is needed on the beacon side. See `docs/runbooks/beacon-operations.md`
+in the **netbrain** repo for tunnel-config caveats (mTLS pass-through, `noTLSVerify`).
+
 Production install: see [`docs/runbooks/beacon-operations.md`](docs/runbooks/beacon-operations.md).
 
 ## Build
