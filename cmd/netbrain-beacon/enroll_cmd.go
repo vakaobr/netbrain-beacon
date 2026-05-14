@@ -10,9 +10,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/vakaobr/netbrain-beacon/internal/api"
 	"github.com/vakaobr/netbrain-beacon/internal/enroll"
+	"github.com/vakaobr/netbrain-beacon/internal/mesh"
 )
 
 // runEnroll implements the `netbrain-beacon enroll ...` subcommand.
@@ -45,6 +47,9 @@ func runEnroll(args []string, stdout, stderr io.Writer) int {
 		force            = fs.Bool("force", false, "overwrite existing enrollment in state-dir")
 		allowUnsigned    = fs.Bool("allow-unsigned", false, "accept unsigned bundles (DEV ONLY)")
 		hostnameOverride = fs.String("hostname", "", "override the hostname sent in beacon_metadata (default: os.Hostname)")
+		skipMesh         = fs.Bool("skip-mesh", false, "skip Cloudflare WARP mesh enrollment even when the bundle carries credentials")
+		warpCLIPath      = fs.String("warp-cli", "", "override the warp-cli binary path (default: looked up on PATH)")
+		warpPollSeconds  = fs.Int("warp-poll-seconds", 60, "how long to wait for the WARP daemon to reach the connected state")
 	)
 
 	if err := fs.Parse(args); err != nil {
@@ -66,11 +71,24 @@ func runEnroll(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// 1) Parse + verify the bundle.
+	// 1) Parse + verify the bundle (v2 only — v1 bundles are rejected
+	// with enroll.ErrBundleVersionUnsupported per ADR-007).
 	bundle, err := enroll.ParseBundle(bundleStr, *allowUnsigned)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "enroll: bundle rejected: %v\n", err)
 		return 1
+	}
+
+	// 1b) Cloudflare WARP mesh enrollment, when the bundle carries it.
+	// This MUST land before the HTTP /enroll round-trip because the
+	// platform's overlay-IP server cert is only reachable from inside
+	// the WARP mesh in mesh-on deployments.
+	if bundle.MeshEnabled() && !*skipMesh {
+		if rc := runMeshEnroll(stdout, stderr, bundle, *warpCLIPath, *warpPollSeconds); rc != 0 {
+			return rc
+		}
+	} else if bundle.MeshEnabled() && *skipMesh {
+		_, _ = fmt.Fprintln(stdout, "enroll: --skip-mesh — skipping WARP enrollment; the HTTP /enroll round-trip MUST be reachable without the mesh")
 	}
 
 	// 2) Idempotency: refuse double-enroll unless --force.
@@ -195,6 +213,63 @@ func readBundleArg(bundle, bundleFile string, stderr io.Writer) (string, error) 
 	// produces a valid bundle (the newline is harmless to ParseBundle
 	// today but the inconsistency would surprise operators).
 	return strings.TrimSpace(string(raw)), nil
+}
+
+// runMeshEnroll decrypts the bundle's WARP envelope, drives warp-cli
+// through the Service-Token attach + connect sequence, and polls until
+// the daemon reaches the connected state. Returns 0 on success or a
+// CLI exit code on failure.
+//
+// Argon2id KEK derivation runs the production OWASP-2025 parameters
+// (t=2 / m=64 MiB / p=1 / len=32) which takes ~1-3 seconds on commodity
+// hardware. The function prints a progress line so operators don't
+// think the binary has hung.
+func runMeshEnroll(stdout, stderr io.Writer, bundle *enroll.BundleV2, warpCLIPath string, pollSeconds int) int {
+	_, _ = fmt.Fprintln(stdout, "enroll: decrypting WARP credentials (Argon2id KEK derivation — ~1-3 seconds)…")
+	creds, err := bundle.DecryptWARPEnvelope()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "enroll: WARP envelope decrypt failed: %v\n", err)
+		return 1
+	}
+
+	client := mesh.NewClient(warpCLIPath)
+	_, _ = fmt.Fprintf(stdout, "enroll: attaching to Cloudflare team account %s via warp-cli…\n", redactID(creds.TeamAccountID))
+
+	enrollCtx, cancel := context.WithTimeout(context.Background(), time.Duration(pollSeconds+30)*time.Second)
+	defer cancel()
+
+	if err := client.Enroll(enrollCtx, mesh.Credentials{
+		TeamAccountID:      creds.TeamAccountID,
+		ServiceTokenClient: creds.ServiceTokenClient,
+		ServiceTokenSecret: creds.ServiceTokenSecret,
+	}); err != nil {
+		if errors.Is(err, mesh.ErrWARPCLINotFound) {
+			_, _ = fmt.Fprintln(stderr, "enroll: warp-cli is not installed. Install Cloudflare WARP first, OR pass --skip-mesh if the platform is reachable without the mesh.")
+		} else {
+			_, _ = fmt.Fprintf(stderr, "enroll: WARP enrollment failed: %v\n", err)
+		}
+		return 1
+	}
+
+	_, _ = fmt.Fprintf(stdout, "enroll: polling for WARP connected state (up to %d s)…\n", pollSeconds)
+	pollCtx, pollCancel := context.WithTimeout(enrollCtx, time.Duration(pollSeconds)*time.Second)
+	defer pollCancel()
+	if err := client.PollEnrolled(pollCtx, 2*time.Second); err != nil {
+		_, _ = fmt.Fprintf(stderr, "enroll: WARP did not reach connected state within %d s: %v\n", pollSeconds, err)
+		return 1
+	}
+	_, _ = fmt.Fprintln(stdout, "enroll: WARP mesh ready — proceeding to HTTP /enroll")
+	return 0
+}
+
+// redactID returns the first 8 chars of an account ID for logging — the
+// CF account ID is not a secret per se but is operationally sensitive
+// and there is no upside to printing it in full to operator logs.
+func redactID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8] + "…"
 }
 
 // beaconOS maps runtime.GOOS to the OpenAPI BeaconMetadataOs enum.

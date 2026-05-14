@@ -40,6 +40,40 @@ make build
 ./bin/netbrain-beacon daemon --state-dir ./state
 ```
 
+### Cloudflare WARP mesh (bundle v2)
+
+Bundles emitted by the NetBrain platform are **always v2** (ADR-007 pairs with
+netbrain ADR-087). v1 bundles are rejected with `ErrBundleVersionUnsupported`.
+
+When the bundle carries WARP enrollment credentials (the platform's Cloudflare
+mesh integration is configured), `enroll` will:
+
+1. Argon2id-derive a per-bundle KEK from the bootstrap token + envelope salt
+   (~1-3 s on commodity hardware).
+2. AES-256-GCM-decrypt the WARP credential envelope.
+3. Invoke `warp-cli access set-default-account ...`, `warp-cli access
+   add-account-key ...`, `warp-cli connect` to attach the host to the
+   platform's WARP team.
+4. Poll `warp-cli status` until the daemon reaches the connected state
+   (up to `--warp-poll-seconds`, default 60).
+5. Continue with the HTTP `/enroll` round-trip over the mesh overlay.
+
+Flags:
+
+```
+--skip-mesh                  bypass WARP enrollment even when the bundle carries
+                             credentials (useful when the platform is reachable
+                             without the mesh, e.g. LAN-only deployments)
+--warp-cli <path>            override the warp-cli binary path
+--warp-poll-seconds <int>    deadline for reaching the WARP "connected" state
+```
+
+The WARP CLI must be installed before running `enroll` on a customer machine —
+the beacon binary does NOT bundle Cloudflare's distribution. Install via the
+platform-appropriate package from <https://1.1.1.1> or follow Cloudflare's
+WARP client docs. The beacon detects a missing `warp-cli` and exits with
+`ErrWARPCLINotFound`; the runbook explains the install path.
+
 **Dev / staging endpoint** (2026-05-13–): `https://netbrain-dev-beacon.andersonleite.me/` —
 a Cloudflare tunnel forwards inbound traffic to the netbrain platform's nginx mTLS
 terminator on host port 8443. Use this as the `--server-url` when testing against

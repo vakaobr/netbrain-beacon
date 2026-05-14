@@ -15,9 +15,14 @@ import (
 	bcrypto "github.com/vakaobr/netbrain-beacon/internal/crypto"
 )
 
-// buildBundle is a test helper that mints a fresh ed25519 keypair, signs a
-// bundle payload exactly like the Python netbrain side does, and returns
-// the base64-encoded bundle ready for ParseBundle.
+// buildBundle mints a fresh ed25519 keypair, signs a v2 bundle payload
+// exactly the way the Python netbrain side does, and returns the
+// base64-encoded bundle ready for ParseBundle.
+//
+// Post bundle-v2 cutover (ADR-007), the signature covers every v2 field
+// except `signature` and `platform_pubkey_pem`. This helper builds
+// mesh-OFF bundles by default; mesh-ON variants use buildBundleV2 in
+// bundle_v2_test.go.
 //
 // Knobs let individual tests sabotage one field at a time:
 //   - tamperSig: replace signature with garbage
@@ -42,11 +47,16 @@ func buildBundle(t *testing.T, opts ...bundleOpt) string {
 	require.NoError(t, err)
 	pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}))
 
-	// Canonical-JSON-sign the same payload Python signs.
+	// Canonical-JSON-sign the full v2 payload (mesh fields included as
+	// empty strings — this is the "mesh-off" emit path).
 	payload := map[string]any{
-		"bootstrap_token":  cfg.bootstrapToken,
-		"expires_at":       cfg.expiresAt,
-		"platform_ca_cert": cfg.caCertPEM,
+		"version":                      2,
+		"bootstrap_token":              cfg.bootstrapToken,
+		"expires_at":                   cfg.expiresAt,
+		"platform_ca_cert":             cfg.caCertPEM,
+		"warp_team_domain":             "",
+		"warp_platform_hostname":       "",
+		"warp_enrollment_envelope_b64": "",
 	}
 	canonical, err := bcrypto.CanonicalizePayload(payload)
 	require.NoError(t, err)
@@ -59,7 +69,6 @@ func buildBundle(t *testing.T, opts ...bundleOpt) string {
 	}
 
 	if cfg.tamperSig {
-		// Flip a byte in the signature.
 		raw, decodeErr := base64.StdEncoding.DecodeString(sigB64)
 		require.NoError(t, decodeErr)
 		raw[0] ^= 0xff
@@ -67,11 +76,15 @@ func buildBundle(t *testing.T, opts ...bundleOpt) string {
 	}
 
 	bundle := map[string]any{
-		"bootstrap_token":     payload["bootstrap_token"],
-		"expires_at":          payload["expires_at"],
-		"platform_ca_cert":    payload["platform_ca_cert"],
-		"platform_pubkey_pem": pubPEM,
-		"signature":           sigB64,
+		"version":                      payload["version"],
+		"bootstrap_token":              payload["bootstrap_token"],
+		"expires_at":                   payload["expires_at"],
+		"platform_ca_cert":             payload["platform_ca_cert"],
+		"platform_pubkey_pem":          pubPEM,
+		"warp_team_domain":             payload["warp_team_domain"],
+		"warp_platform_hostname":       payload["warp_platform_hostname"],
+		"warp_enrollment_envelope_b64": payload["warp_enrollment_envelope_b64"],
+		"signature":                    sigB64,
 	}
 	if cfg.omitPubkey {
 		bundle["platform_pubkey_pem"] = ""
@@ -123,6 +136,7 @@ func TestParseBundleHappy(t *testing.T) {
 	require.NotEmpty(t, parsed.PlatformCACert)
 	require.NotEmpty(t, parsed.PlatformPubKeyPEM)
 	require.True(t, parsed.ExpiresAt.After(time.Now()))
+	require.Equal(t, 2, parsed.Version)
 }
 
 // --- error paths ---
@@ -159,8 +173,6 @@ func TestParseBundleTamperedSignature(t *testing.T) {
 }
 
 func TestParseBundleTamperedPayload(t *testing.T) {
-	// Mutate the bootstrap_token AFTER signing. The signature was over
-	// the original token, so verify must fail.
 	b := buildBundle(t, withTamperedPayload())
 	_, err := ParseBundle(b, false)
 	require.ErrorIs(t, err, ErrBundleSignatureInvalid)

@@ -89,21 +89,32 @@ func buildSignedBundle(t *testing.T, token, caCertPEM string, expiresAt time.Tim
 	pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}))
 
 	expStr := expiresAt.UTC().Format(time.RFC3339)
+	// Bundle v2 (ADR-007): signature covers every field except
+	// `signature` and `platform_pubkey_pem`. Mesh-off path emits the
+	// three warp_* fields as empty strings.
 	payload := map[string]any{
-		"bootstrap_token":  token,
-		"expires_at":       expStr,
-		"platform_ca_cert": caCertPEM,
+		"version":                      2,
+		"bootstrap_token":              token,
+		"expires_at":                   expStr,
+		"platform_ca_cert":             caCertPEM,
+		"warp_team_domain":             "",
+		"warp_platform_hostname":       "",
+		"warp_enrollment_envelope_b64": "",
 	}
 	canonical, err := bcrypto.CanonicalizePayload(payload)
 	require.NoError(t, err)
 	sig := ed25519.Sign(priv, canonical)
 
 	bundle := map[string]any{
-		"bootstrap_token":     token,
-		"expires_at":          expStr,
-		"platform_ca_cert":    caCertPEM,
-		"platform_pubkey_pem": pubPEM,
-		"signature":           base64.StdEncoding.EncodeToString(sig),
+		"version":                      2,
+		"bootstrap_token":              token,
+		"expires_at":                   expStr,
+		"platform_ca_cert":             caCertPEM,
+		"platform_pubkey_pem":          pubPEM,
+		"warp_team_domain":             "",
+		"warp_platform_hostname":       "",
+		"warp_enrollment_envelope_b64": "",
+		"signature":                    base64.StdEncoding.EncodeToString(sig),
 	}
 	raw, err := json.Marshal(bundle)
 	require.NoError(t, err)
