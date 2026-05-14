@@ -65,6 +65,22 @@ Every package format must, at install time:
 4. Register the service (systemd unit / Windows service / launchd).
 5. NOT auto-start the service — enrollment must happen first.
 
+## Runtime prerequisites
+
+The beacon binary is self-contained for telemetry collection but
+depends on Cloudflare's `warp-cli` at enrollment time when the
+platform's Cloudflare mesh integration is active (bundle v2 carries
+WARP credentials). Packagers should:
+
+- **NOT** depend on `cloudflare-warp` at package-install time —
+  customers using direct LAN/VPN ingress run the beacon without WARP.
+- **DO** call this out in package documentation: "If your bundle is
+  marked mesh-enabled, install Cloudflare WARP from
+  <https://pkg.cloudflareclient.com/> before running `enroll`."
+- The beacon detects a missing `warp-cli` and exits with
+  `ErrWARPCLINotFound` — see `docs/runbooks/beacon-operations.md`
+  § "Cloudflare WARP mesh prerequisite (bundle v2)".
+
 ## Documentation
 
 Operator-facing docs live at `../docs/runbooks/beacon-operations.md`.

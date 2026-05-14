@@ -11,6 +11,79 @@ attaches checksummed Linux/macOS/Windows binaries plus .deb / .rpm packages.
 
 ---
 
+## [v0.2.0-rc.1] — 2026-05-14
+
+**Bundle v2 + Cloudflare WARP mesh support.** Pairs with the platform-side
+`add-cloudflare-mesh-onboarding` workflow (netbrain ADR-087..090,
+netbrain-beacon ADR-007 + ADR-008). Enables beacons deployed by Velonet
+consultants to customer infrastructure to route ingress through Cloudflare's
+WARP-to-WARP mesh overlay, bypassing the need for inbound holes in the
+customer's firewall.
+
+### Breaking changes
+
+- **Bundle v1 support removed.** The beacon now rejects any v1 bundle
+  with `ErrBundleVersionUnsupported`. The platform side (netbrain
+  `>= 8ee1cf3`) emits v2-only bundles, matching this cutover. Operators
+  must re-request a fresh enrollment bundle from the NetBrain admin UI
+  after upgrading both sides.
+
+### Added
+
+- **Bundle v2 parser** (`internal/enroll/bundle_v2.go`) with the wire
+  layout `[ver(1B)=0x01 | salt(16B) | iv(12B) | ct(var) | tag(16B)]`
+  base64-encoded. Argon2id KEK derivation at `t=2, m=64 MiB, p=1, len=32`
+  (RFC 9106 / OWASP 2025 baseline) via `golang.org/x/crypto/argon2.IDKey`.
+  AES-256-GCM decrypt with AAD binding `{beacon_token_prefix, expires_at}`.
+  Ed25519 signature now covers the full v2 payload (including mesh fields)
+  so dropping a `warp_*` field after signing trips the regression test.
+- **WARP CLI sub-process wrapper** (`internal/mesh`) — `Client` interface
+  with `cliClient` shelling out to `warp-cli access set-default-account`
+  / `add-account-key` / `connect` and polling `warp-cli status` until
+  connected. Bounded by `--warp-poll-seconds` (default 60). `redactArgs`
+  scrubs the WARP service-token secret from any error message (CWE-214
+  pattern).
+- **`enroll` subcommand flags:**
+  - `--skip-mesh` — bypass WARP enrollment even when the bundle carries
+    credentials (useful for LAN-only deployments).
+  - `--warp-cli <path>` — override the `warp-cli` binary path.
+  - `--warp-poll-seconds <int>` — deadline for reaching the WARP
+    "connected" state.
+- **Cross-language byte-exactness fixtures** (`internal/crypto/fixtures_test.go`
+  `TestCrossLangBundleV2`) — loads 5 bundle v2 envelope cases (happy /
+  zero-length / multibyte / max-length 4096B / tampered-salt) from the
+  platform-generated `cross_lang_fixtures.json` and asserts Python writer ↔
+  Go reader byte-equivalence. `init()` panic-on-drift catches param
+  divergence at process start, before any production code runs.
+- **`docs/runbooks/beacon-operations.md` § Cloudflare WARP mesh
+  prerequisite** — installation instructions for `warp-cli` per OS,
+  flag reference, troubleshooting matrix for `ErrBundleVersionUnsupported`,
+  `ErrWARPCLINotFound`, and mesh-side `/enroll` failures.
+- **`docs/ADR/ADR-007-bundle-v2-warp-envelope.md`** (pairs with netbrain
+  ADR-087) and **`docs/ADR/ADR-008-warp-cli-subprocess-wrapper.md`** (pairs
+  with netbrain ADR-088).
+
+### Changed
+
+- `internal/enroll/bundle.go` becomes a thin discriminator —
+  `Bundle = BundleV2` type alias + `ParseBundle` delegates to
+  `ParseBundleV2`. Existing callers compile unchanged.
+- Enrollment progress lines now emit during the 1-3 s Argon2id KDF so
+  operators don't think the binary hung.
+- `packaging/README.md` documents `warp-cli` as a runtime prerequisite
+  for mesh-enabled bundles (NOT a package-install dependency — direct
+  LAN/VPN deployments don't need it).
+
+### Verified
+
+- `make all` clean on both Windows host and Linux Docker: golangci-lint
+  v2.12.2 zero issues, 17 packages green.
+- `warp-cli status` polling regex (`\bconnected\b`) avoids the false-
+  positive substring match on "Disconnected" — caught in Linux CI on
+  the first run.
+
+---
+
 ## [v0.1.0-rc.2] — 2026-05-12
 
 **Distribution-only release.** The beacon binary is byte-equivalent to

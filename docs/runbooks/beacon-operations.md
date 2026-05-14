@@ -3,6 +3,64 @@
 Operator-facing reference for installing, enrolling, and running the
 netbrain-beacon binary.
 
+## Cloudflare WARP mesh prerequisite (bundle v2)
+
+Starting with `v0.2.0-rc.1`, the platform emits **bundle v2 only** —
+v1 bundles are no longer generated and the beacon rejects any v1 bundle
+with `ErrBundleVersionUnsupported`. Bundle v2 may carry an encrypted
+WARP enrollment credential when the platform's Cloudflare mesh
+integration is active (ADR-007 pairs with netbrain ADR-087).
+
+When the bundle carries WARP credentials, `enroll` will:
+
+1. Argon2id-derive a per-bundle KEK from the bootstrap token + envelope
+   salt (1-3 s on commodity hardware).
+2. AES-256-GCM-decrypt the WARP credential envelope.
+3. Shell out to `warp-cli` to attach the host to the platform's WARP
+   team (`access set-default-account`, `access add-account-key`,
+   `connect`).
+4. Poll `warp-cli status` until the daemon is connected (deadline:
+   `--warp-poll-seconds`, default 60).
+5. Continue with the HTTP `/enroll` round-trip over the mesh overlay.
+
+### `warp-cli` is a runtime prerequisite
+
+The beacon binary does NOT bundle Cloudflare's WARP distribution.
+Install it before running `enroll` on a customer host that needs
+mesh-routed ingress:
+
+- **Linux (Debian/Ubuntu)**: <https://pkg.cloudflareclient.com/> — adds
+  the Cloudflare apt repo + installs `cloudflare-warp`. Verify with
+  `warp-cli --version`.
+- **Linux (RHEL/Fedora)**: same repo, yum / dnf install.
+- **macOS**: download the .pkg from <https://1.1.1.1>.
+- **Windows**: MSI from <https://1.1.1.1>; `warp-cli.exe` lands in
+  `C:\Program Files\Cloudflare\Cloudflare WARP\`.
+
+If `warp-cli` is missing the beacon exits with `ErrWARPCLINotFound`.
+
+### Flags
+
+```
+--skip-mesh                  bypass WARP enrollment even when the bundle
+                             carries credentials (use when the platform
+                             is reachable without the mesh, e.g. LAN-only
+                             deployments)
+--warp-cli <path>            override the warp-cli binary path
+--warp-poll-seconds <int>    deadline for reaching the WARP "connected"
+                             state (default: 60)
+```
+
+### Troubleshooting
+
+| Error                          | Cause + fix |
+|--------------------------------|-------------|
+| `ErrBundleVersionUnsupported`  | Bundle is v1; platform must be re-generated as v2. Operator should request a fresh enrollment token from the NetBrain admin UI. |
+| `ErrWARPCLINotFound`           | `warp-cli` not on `PATH` or at `--warp-cli` path. Install Cloudflare WARP per the section above. |
+| `warp-cli status` timeout      | `--warp-poll-seconds` exceeded without reaching "connected". Check `warp-cli status` manually; verify customer firewall allows outbound to Cloudflare on UDP/443 + UDP/2408. |
+| Argon2id decrypt failure       | Bootstrap token mismatch (bundle was regenerated, operator used stale value). Request a fresh bundle. |
+| Mesh enrollment succeeds, HTTP `/enroll` 502 / connection refused | Platform host's WARP enrollment isn't active OR `CLOUDFLARE_PLATFORM_HOSTNAME` Magic DNS isn't resolving inside the mesh. Coordinate with platform operator — see netbrain `docs/runbooks/beacon-operations.md` § "Activating the Cloudflare WARP mesh path". |
+
 ## Install
 
 ### Linux (tarball + systemd)
