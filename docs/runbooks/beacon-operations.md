@@ -3,6 +3,10 @@
 Operator-facing reference for installing, enrolling, and running the
 netbrain-beacon binary.
 
+For a visual of the full data path from customer-network devices through
+the beacon's collectors / store / sender to the platform's nginx mTLS
+terminator, see [`docs/data-flow.md`](../data-flow.md).
+
 ## Cloudflare WARP mesh prerequisite (bundle v2)
 
 Starting with `v0.2.0-rc.1`, the platform emits **bundle v2 only** —

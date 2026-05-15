@@ -176,6 +176,12 @@ is mandatory before Stage 3 enables `BEACON_MTLS_ENABLED=true` in production. Se
 [`docs/runbooks/beacon-operations.md`](docs/runbooks/beacon-operations.md#phase-7b-pentest-reference)
 for specific targets.
 
+## Documentation
+
+- [End-to-end data flow: devices → beacon → platform](docs/data-flow.md) — Mermaid diagram + component / encryption / transport tables for consultants installing beacons and operators troubleshooting ingestion.
+- [Operator runbook](docs/runbooks/beacon-operations.md) — install, enroll, monitor, re-enroll, uninstall.
+- [Architecture decision records](docs/ADR/README.md) — ADR-001..009 + netbrain pairing map.
+
 ## License
 
 Proprietary — internal NetBrain product. License file pending legal review.
