@@ -1,9 +1,25 @@
 # ADR-008: WARP CLI sub-process wrapper (`internal/mesh`)
 
-**Status:** Accepted
+**Status:** Accepted (with erratum — see top of file)
 **Date:** 2026-05-14
 **Context issue:** add-cloudflare-mesh-onboarding (cross-repo)
 **Pairs with:** [netbrain/ADR/ADR-088-cloudflare-integration-module-and-fernet-wrapped-api-token.md](https://github.com/velonet/netbrain/blob/main/.claude/planning/add-cloudflare-mesh-onboarding/03_ADR-088-cloudflare-integration-module-and-fernet-wrapped-api-token.md) — the platform side mints the Service Token; this ADR records how the beacon consumes it via the WARP CLI.
+
+## Erratum — 2026-05-15 (v0.2.0-rc.2)
+
+The `warp-cli access set-default-account` / `add-account-key` / `connect` argv sequence described below is **no longer functional**. Cloudflare removed the `access` subcommand entirely from current WARP CLI builds (2026.x). The headless Service-Token enrollment surface is now MDM-file-based, OS-specific:
+
+| OS | Path | Format |
+|---|---|---|
+| Linux | `/var/lib/cloudflare-warp/mdm.xml` | XML dict |
+| macOS | `/Library/Managed Preferences/com.cloudflare.warp.plist` | plist |
+| Windows | `HKLM:\SOFTWARE\Cloudflare\CloudflareWARP` | registry |
+
+This beacon release (`v0.2.0-rc.2`) implements the **Linux path only**; macOS / Windows return `ErrMeshUnsupportedOS` and the operator falls back to interactive `warp-cli registration new <team-slug>` + the beacon's `--skip-mesh` flag.
+
+The implementation pivot is recorded in [ADR-009](./ADR-009-mdm-file-headless-warp-enrollment.md). The remainder of this ADR is preserved for historical context — every other architectural decision (sub-process boundary, test injection, status-regex discipline, `redactArgs`) still applies; only the specific argv used to attach has changed.
+
+---
 
 ## Context
 

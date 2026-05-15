@@ -24,6 +24,10 @@ import (
 //     "disconnected" → prints "Status update: Disconnected" to stdout, exit 0.
 //     "fail"        → exit 7 (rejected by warp-cli).
 //     (anything else) → prints "Registration Missing", exit 0.
+//   - On `mdm refresh` → reads marker file:
+//     "mdm-unsupported" → stderr "error: unrecognized subcommand 'mdm'", exit 2.
+//     "mdm-fail"        → stderr "error: refresh failed", exit 1.
+//     anything else     → exit 0.
 //   - On any other sub-command → exit 0 quietly (Enroll happy path).
 func writeFakeWarpCLI(t *testing.T) (path string, markerPath string) {
 	t.Helper()
@@ -51,6 +55,14 @@ if "%1"=="status" (
   echo Status update: Registration Missing
   exit /b 0
 )
+if "%1"=="mdm" (
+  if exist "` + markerPath + `" (
+    set /p s=<"` + markerPath + `"
+    if "%s%"=="mdm-unsupported" ( echo error: unrecognized subcommand 'mdm' 1>&2 & exit /b 2 )
+    if "%s%"=="mdm-fail" ( echo error: refresh failed 1>&2 & exit /b 1 )
+  )
+  exit /b 0
+)
 exit /b 0
 `
 	} else {
@@ -73,6 +85,16 @@ case "$1" in
     echo "Status update: Registration Missing"
     exit 0
     ;;
+  mdm)
+    if [ -f "` + markerPath + `" ]; then
+      s=$(cat "` + markerPath + `")
+      case "$s" in
+        mdm-unsupported) echo "error: unrecognized subcommand 'mdm'" 1>&2; exit 2 ;;
+        mdm-fail) echo "error: refresh failed" 1>&2; exit 1 ;;
+      esac
+    fi
+    exit 0
+    ;;
   *)
     exit 0
     ;;
@@ -91,7 +113,7 @@ func writeMarker(t *testing.T, markerPath, value string) {
 }
 
 // ----------------------------------------------------------------------------
-// IsEnrolled
+// IsEnrolled — platform-agnostic; runs on every supported OS.
 // ----------------------------------------------------------------------------
 
 func TestIsEnrolled_Connected(t *testing.T) {
@@ -128,52 +150,8 @@ func TestIsEnrolled_CLIFails(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// ErrWARPCLINotFound on PATH-miss
+// PollEnrolled — timeout behaviour, platform-agnostic.
 // ----------------------------------------------------------------------------
-
-func TestEnroll_BinaryMissing(t *testing.T) {
-	c := NewClient("/definitely/not/a/real/warp-cli/binary/path/foo")
-	err := c.Enroll(context.Background(), Credentials{
-		TeamAccountID:      "acct-id",
-		ServiceTokenClient: "client-id.access",
-		ServiceTokenSecret: "secret",
-	})
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrWARPCLINotFound)
-}
-
-// ----------------------------------------------------------------------------
-// Enroll happy path: every step exits 0; then PollEnrolled flips on the
-// marker file (simulating the WARP daemon taking a moment to attach).
-// ----------------------------------------------------------------------------
-
-func TestEnroll_ThenPollEnrolled_HappyPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script fake CLI is POSIX-only")
-	}
-	path, marker := writeFakeWarpCLI(t)
-	// Start with "disconnected" so PollEnrolled has to retry at least once.
-	writeMarker(t, marker, "disconnected")
-
-	c := NewClient(path)
-	require.NoError(t, c.Enroll(context.Background(), Credentials{
-		TeamAccountID:      "acct-id",
-		ServiceTokenClient: "client-id.access",
-		ServiceTokenSecret: "secret",
-	}))
-
-	// Flip the marker file to "connected" after a small delay so the
-	// poll loop has to iterate at least once. This proves we're using
-	// the polling code path, not just the immediate-probe path.
-	go func() {
-		time.Sleep(150 * time.Millisecond)
-		writeMarker(t, marker, "connected")
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	require.NoError(t, c.PollEnrolled(ctx, 50*time.Millisecond))
-}
 
 func TestPollEnrolled_Timeout(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -194,17 +172,7 @@ func TestPollEnrolled_Timeout(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Enroll rejects empty credentials early — before invoking the binary.
-// ----------------------------------------------------------------------------
-
-func TestEnroll_MissingCredentials(t *testing.T) {
-	c := NewClient("/anything") // never called; the empty-creds check trips first
-	err := c.Enroll(context.Background(), Credentials{TeamAccountID: "acct"})
-	require.ErrorIs(t, err, ErrWARPCLIFailed)
-}
-
-// ----------------------------------------------------------------------------
-// redactArgs scrubs the service-token secret from error messages.
+// redactArgs — preserved post-MDM-pivot for any future secret-bearing argv.
 // ----------------------------------------------------------------------------
 
 func TestRedactArgs_RedactsServiceTokenSecret(t *testing.T) {
@@ -218,4 +186,44 @@ func TestRedactArgs_LeavesOtherArgsAlone(t *testing.T) {
 	require.Equal(t, "connect", got)
 	got = redactArgs([]string{"access", "set-default-account", "team-id-abc"})
 	require.Equal(t, "access set-default-account team-id-abc", got)
+}
+
+// ----------------------------------------------------------------------------
+// Enroll non-Linux path — must return ErrMeshUnsupportedOS on any OS that
+// isn't Linux. We exercise this by overriding the platform predicate on the
+// cliClient so the test can run on any dev host. The runtime-build dispatch
+// is verified by the build-tag-split (`mdm_linux.go` vs `mdm_other.go`).
+// ----------------------------------------------------------------------------
+
+func TestEnrollNonLinuxReturnsUnsupportedOS(t *testing.T) {
+	// We construct a cliClient directly (bypassing NewClient) so we can
+	// flip the `goos` field. The build-tag guard in mdm_linux.go also
+	// checks c.goos and short-circuits — that's the path under test.
+	if runtime.GOOS != "linux" {
+		// On non-Linux the build-tagged Enroll (in mdm_other.go) is the
+		// implementation; it unconditionally returns ErrMeshUnsupportedOS.
+		c := NewClient("warp-cli")
+		err := c.Enroll(context.Background(), Credentials{
+			WARPTeamDomain:     "netbrain-dev.cloudflareaccess.com",
+			ServiceTokenClient: "abc",
+			ServiceTokenSecret: "secret",
+		})
+		require.ErrorIs(t, err, ErrMeshUnsupportedOS)
+		return
+	}
+
+	// On Linux, the Enroll function is the MDM-file path. We use the
+	// `goos` override to make it think it's running somewhere else,
+	// triggering the defensive guard in mdm_linux.go's Enroll.
+	c := &cliClient{
+		binPath: "warp-cli",
+		goos:    "darwin",
+		mdmPath: defaultMDMPath,
+	}
+	err := c.Enroll(context.Background(), Credentials{
+		WARPTeamDomain:     "netbrain-dev.cloudflareaccess.com",
+		ServiceTokenClient: "abc",
+		ServiceTokenSecret: "secret",
+	})
+	require.ErrorIs(t, err, ErrMeshUnsupportedOS)
 }

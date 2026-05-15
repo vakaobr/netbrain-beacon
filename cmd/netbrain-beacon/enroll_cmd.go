@@ -233,19 +233,30 @@ func runMeshEnroll(stdout, stderr io.Writer, bundle *enroll.BundleV2, warpCLIPat
 	}
 
 	client := mesh.NewClient(warpCLIPath)
-	_, _ = fmt.Fprintf(stdout, "enroll: attaching to Cloudflare team account %s via warp-cli…\n", redactID(creds.TeamAccountID))
+	_, _ = fmt.Fprintf(stdout, "enroll: attaching to Cloudflare team account %s via headless MDM enrollment…\n", redactID(creds.TeamAccountID))
 
 	enrollCtx, cancel := context.WithTimeout(context.Background(), time.Duration(pollSeconds+30)*time.Second)
 	defer cancel()
 
 	if err := client.Enroll(enrollCtx, mesh.Credentials{
+		WARPTeamDomain:     bundle.WARPTeamDomain,
 		TeamAccountID:      creds.TeamAccountID,
 		ServiceTokenClient: creds.ServiceTokenClient,
 		ServiceTokenSecret: creds.ServiceTokenSecret,
 	}); err != nil {
-		if errors.Is(err, mesh.ErrWARPCLINotFound) {
+		switch {
+		case errors.Is(err, mesh.ErrMeshUnsupportedOS):
+			_, _ = fmt.Fprintln(stderr,
+				"enroll: headless WARP mesh enrollment is only supported on Linux in this beacon release.")
+			_, _ = fmt.Fprintln(stderr,
+				"       On macOS / Windows, enroll the host into the team interactively first:")
+			_, _ = fmt.Fprintln(stderr,
+				"           warp-cli registration new <team-slug>")
+			_, _ = fmt.Fprintln(stderr,
+				"       then re-run `netbrain-beacon enroll ... --skip-mesh`.")
+		case errors.Is(err, mesh.ErrWARPCLINotFound):
 			_, _ = fmt.Fprintln(stderr, "enroll: warp-cli is not installed. Install Cloudflare WARP first, OR pass --skip-mesh if the platform is reachable without the mesh.")
-		} else {
+		default:
 			_, _ = fmt.Fprintf(stderr, "enroll: WARP enrollment failed: %v\n", err)
 		}
 		return 1

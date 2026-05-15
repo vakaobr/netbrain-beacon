@@ -11,6 +11,94 @@ attaches checksummed Linux/macOS/Windows binaries plus .deb / .rpm packages.
 
 ---
 
+## [v0.2.0-rc.2] — 2026-05-15
+
+**WARP CLI surface drift fix.** Cloudflare removed the
+`warp-cli access set-default-account` and `warp-cli access add-account-key`
+subcommands from current WARP CLI builds (2026.x). v0.2.0-rc.1 shipped
+against the deprecated surface and could not complete headless
+Service-Token enrollment on a freshly-installed WARP CLI. This release
+replaces the argv-driven path with the supported MDM-file path on
+**Linux only**; macOS / Windows return a typed `ErrMeshUnsupportedOS`
+and operators fall back to interactive `warp-cli registration new` +
+`--skip-mesh`.
+
+### Breaking changes
+
+- `mesh.Credentials` gained a `WARPTeamDomain` field. Callers
+  constructing the struct directly (none in production today; only
+  `cmd/netbrain-beacon/enroll_cmd.go` does so) must supply it.
+
+### Changed
+
+- **`internal/mesh` rewrite** — replaced the deprecated
+  `warp-cli access` subprocess sequence with an MDM-file path:
+  the beacon writes `/var/lib/cloudflare-warp/mdm.xml` (mode 0600,
+  owner root, atomic temp+rename) carrying the team slug,
+  `auth_client_id`, `auth_client_secret`, and the
+  `service_mode=warp` / `auto_connect=1` / `onboarding=false` switches
+  that Cloudflare's headless deployment surface expects, then triggers
+  `warp-cli mdm refresh` (on `>= 2026.4.1350.0`) or falls back to
+  `systemctl restart warp-svc`. The daemon connects itself —
+  `warp-cli connect` is no longer invoked.
+- **Linux-only headless mesh.** On macOS / Windows the new
+  `mesh.ErrMeshUnsupportedOS` is returned and the operator runs
+  interactive `warp-cli registration new <team-slug>` + the beacon
+  with `--skip-mesh`. macOS / Windows headless MDM enrollment (plist /
+  registry) is deferred to a future v0.3.0.
+- `mesh.Client.Enroll` is now split across build tags
+  (`internal/mesh/mdm_linux.go` vs `internal/mesh/mdm_other.go`); the
+  `Client` interface contract is unchanged so the `enroll` command
+  compiles without changes beyond the new `WARPTeamDomain` field.
+- Minimum supported `warp-cli` raised to **`>= 2026.1.150.0`**. The
+  `mdm refresh` fast-path requires `>= 2026.4.1350.0`; older CLIs
+  still work via the systemctl-restart fallback.
+- **On-disk secret posture.** The service-token client_secret now
+  persists at `/var/lib/cloudflare-warp/mdm.xml` (mode 0600, root-only)
+  instead of only living in memory during a subprocess argv. Documented
+  in ADR-009 (paired with netbrain ADR-091). Hardening guidance in the
+  runbook (full-disk encryption on low-trust hosts) gained an explicit
+  pointer.
+
+### Added
+
+- **`mesh.ErrMeshUnsupportedOS`** — exported sentinel error so the
+  `enroll` command can branch on it and print operator guidance.
+- **Runbook updates** (`docs/runbooks/beacon-operations.md` §
+  "Cloudflare WARP mesh prerequisite") — OS support matrix, MDM-file
+  description, macOS / Windows manual operator path, troubleshooting
+  rows for `ErrMeshUnsupportedOS` and "MDM file written but daemon
+  doesn't connect".
+- **ADR-008 erratum** noting the MDM-file pivot.
+- **ADR-009** (`docs/ADR/ADR-009-mdm-file-headless-warp-enrollment.md`)
+  documenting the headless-MDM-file approach + the on-disk-secret
+  posture change (paired with netbrain ADR-091).
+
+### Verified
+
+- `make all` clean on Linux Docker:
+  - golangci-lint v2.12.2 — 0 issues across `./...`
+  - 340 tests pass (`go test -race -coverprofile`), `internal/mesh`
+    coverage 73.9% (up from 70.4%; +17 tests in the package).
+  - Cross-compile for `linux/amd64`, `linux/arm64`, `darwin/amd64`,
+    `darwin/arm64`, `windows/amd64` all succeed.
+
+### Removed
+
+- The `warp-cli access set-default-account` / `add-account-key` /
+  `connect` argv path. These subcommands were removed by Cloudflare
+  and cannot be relied on by any current WARP CLI build.
+
+### Notes
+
+- The `redactArgs` helper is preserved for any future warp-cli
+  subcommand that grows a secret-bearing argv. The MDM-file path
+  itself carries no secrets via argv.
+- Tag the release as `v0.2.0-rc.2` and let the GitHub Release
+  workflow build the artifacts.
+
+---
+
 ## [v0.2.0-rc.1] — 2026-05-14
 
 **Bundle v2 + Cloudflare WARP mesh support.** Pairs with the platform-side

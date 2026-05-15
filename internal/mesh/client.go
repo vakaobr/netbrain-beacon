@@ -3,15 +3,22 @@
 // without bundling Cloudflare's binaries.
 //
 // ADR-008 (this repo) // pairs with netbrain ADR-088.
+// ADR-009 (this repo) supersedes the original `warp-cli access` argv path
+// with an MDM-file approach after Cloudflare removed the `access` subcommand
+// from current WARP CLI builds (v0.2.0-rc.2, 2026-05-15).
 //
-// The WARP CLI exposes a Service-Token authentication path
-// (`warp-cli access add-account-key <client_id> <client_secret>`) that
-// lets a beacon attach to the Velonet Zero Trust team without operator
-// SSO. The bundle v2 envelope carries the Service Token credentials
-// (decrypted at enroll time via enroll.BundleV2.DecryptWARPEnvelope);
-// this package consumes them.
+// The WARP CLI no longer exposes a headless Service-Token argv path. The
+// supported headless enrollment surface is now an MDM-file dropped at a
+// well-known path BEFORE the WARP daemon starts; the daemon reads it on
+// service start (or via `warp-cli mdm refresh` on >= 2026.4.1350.0). On
+// Linux that path is `/var/lib/cloudflare-warp/mdm.xml`; macOS uses a
+// `/Library/Managed Preferences/...plist` and Windows uses registry
+// values. Only Linux is implemented in this release — macOS / Windows
+// return ErrMeshUnsupportedOS and the operator falls back to
+// `--skip-mesh + interactive warp-cli registration new`.
 //
-// We intentionally invoke warp-cli as a sub-process rather than linking
+// We continue to invoke warp-cli as a sub-process (for status polling and
+// for the optional `warp-cli mdm refresh` fast-path) rather than linking
 // any Cloudflare library:
 //   - WARP is a system service (not a library) on Linux / macOS / Windows;
 //     all interaction goes through the local socket the CLI already wraps.
@@ -67,6 +74,25 @@ var (
 	// status is not yet "Connected". Caller polls + retries until the
 	// poll budget expires.
 	ErrWARPNotEnrolled = errors.New("warp-cli reports not enrolled")
+
+	// ErrMeshUnsupportedOS is returned by Enroll when the host OS is
+	// not Linux. The Cloudflare-supplied headless enrollment surface
+	// differs per OS (Linux XML, macOS plist, Windows registry) and
+	// only Linux is implemented in this release. The error message
+	// points the operator at the `--skip-mesh + interactive warp-cli
+	// registration new` workaround.
+	ErrMeshUnsupportedOS = errors.New(
+		"headless WARP mesh enrollment is only implemented for Linux in this beacon release; " +
+			"on macOS / Windows, run `warp-cli registration new <team-slug>` interactively first, " +
+			"then re-run `netbrain-beacon enroll` with --skip-mesh",
+	)
+
+	// ErrMDMRefreshUnsupported is an internal sentinel signalling that
+	// `warp-cli mdm refresh` failed (either the subcommand doesn't
+	// exist on this WARP version, or the daemon rejected the call) and
+	// the caller should fall back to `systemctl restart warp-svc`.
+	// Not exported — internal control flow only.
+	errMDMRefreshUnsupported = errors.New("warp-cli mdm refresh unsupported")
 )
 
 // Client is the contract the enroll command depends on. The default
@@ -77,14 +103,21 @@ type Client interface {
 	// described by `creds`, then waits for the daemon to reach the
 	// connected state (Cloudflare confirms enrollment server-side).
 	//
-	// On Linux / macOS the sequence is:
+	// On Linux, the sequence is:
 	//
-	//   warp-cli access set-default-account <team_account_id>
-	//   warp-cli access add-account-key <client_id> <client_secret>
-	//   warp-cli connect
+	//   1. Write `/var/lib/cloudflare-warp/mdm.xml` (mode 0600) carrying
+	//      the team slug + Service-Token client_id + client_secret.
+	//   2. Try `warp-cli mdm refresh` (works on >= 2026.4.1350.0).
+	//   3. If (2) fails, `systemctl restart warp-svc`.
+	//   4. Poll `warp-cli status` until "Status update: Connected" or
+	//      the ctx deadline.
 	//
-	// On Windows the call paths are the same but use a different
-	// shell quoting strategy.
+	// `auto_connect=1` in the MDM file causes the daemon to connect
+	// itself — no explicit `warp-cli connect` call is needed.
+	//
+	// On macOS / Windows the call returns ErrMeshUnsupportedOS — the
+	// operator must run interactive `warp-cli registration new` first
+	// and re-invoke `netbrain-beacon enroll --skip-mesh`.
 	//
 	// Returns ErrWARPCLINotFound when warp-cli isn't on PATH;
 	// ErrWARPCLIFailed (wrapping the sub-process exit + stderr) when
@@ -104,59 +137,69 @@ type Client interface {
 	PollEnrolled(ctx context.Context, interval time.Duration) error
 }
 
-// Credentials carries the Service-Token-backed inputs warp-cli needs.
-// Mirrors enroll.WARPCredentials so callers can hand the decrypted
-// bundle payload directly without re-translating fields.
+// Credentials carries the Service-Token-backed inputs the WARP MDM file
+// needs. Mirrors enroll.WARPCredentials (plus the `WARPTeamDomain`
+// passed alongside from the bundle) so callers can hand the decrypted
+// envelope contents directly without re-translating fields.
 type Credentials struct {
-	TeamAccountID      string // CF account ID — warp-cli access set-default-account <id>
-	ServiceTokenClient string // client_id — warp-cli access add-account-key <id> ...
-	ServiceTokenSecret string // client_secret — warp-cli access add-account-key ... <secret>
+	// WARPTeamDomain is the team's Cloudflare Access subdomain — for
+	// example "netbrain-dev.cloudflareaccess.com". The MDM file's
+	// `<organization>` value is derived by stripping the
+	// `.cloudflareaccess.com` suffix.
+	WARPTeamDomain string
+
+	// TeamAccountID is the CF account UUID. Retained for logging /
+	// future use; the MDM file does NOT carry it (Cloudflare's headless
+	// MDM enrollment is per-team, not per-account).
+	TeamAccountID string
+
+	// ServiceTokenClient is the service-token client_id. Must end in
+	// `.access`; the MDM writer appends the suffix if missing.
+	ServiceTokenClient string
+
+	// ServiceTokenSecret is the service-token client_secret. Written
+	// to `/var/lib/cloudflare-warp/mdm.xml` at mode 0600 — see ADR-009
+	// for the on-disk-secret posture decision.
+	ServiceTokenSecret string
 }
 
 // NewClient returns the default cli-backed Client. The optional binPath
 // arg is for tests — pass a path to a fake script that mimics warp-cli;
 // otherwise the empty string resolves to the system "warp-cli".
+//
+// Platform dispatch: on Linux the returned client's Enroll method
+// writes /var/lib/cloudflare-warp/mdm.xml and restarts warp-svc; on
+// other OSes Enroll returns ErrMeshUnsupportedOS. The IsEnrolled /
+// PollEnrolled methods are platform-agnostic (they just call
+// `warp-cli status`).
 func NewClient(binPath string) Client {
 	if binPath == "" {
 		binPath = "warp-cli"
 	}
-	return &cliClient{binPath: binPath}
+	return &cliClient{
+		binPath:    binPath,
+		goos:       runtime.GOOS,
+		mdmPath:    defaultMDMPath,
+		runRestart: defaultRunSystemctlRestart,
+	}
 }
 
+// cliClient is the shared implementation backing all platforms. The
+// platform-specific code paths live in mdm_linux.go and mdm_other.go,
+// dispatched at runtime via the `goos` field (which exists so tests can
+// override the platform predicate without juggling build tags).
 type cliClient struct {
 	binPath string
-}
+	goos    string // runtime.GOOS at construction time; overridable for tests
 
-// Enroll runs the three-step service-token attach. Each sub-step is
-// quoted explicitly so a malformed input doesn't get a chance to expand
-// into separate arguments — exec.CommandContext takes argv as a slice,
-// not a single string.
-func (c *cliClient) Enroll(ctx context.Context, creds Credentials) error {
-	if creds.TeamAccountID == "" || creds.ServiceTokenClient == "" || creds.ServiceTokenSecret == "" {
-		return fmt.Errorf("%w: missing required field in Credentials", ErrWARPCLIFailed)
-	}
-	if err := c.assertBinaryAvailable(ctx); err != nil {
-		return err
-	}
+	// mdmPath returns the on-disk path the daemon expects the MDM
+	// file at. Overridable in tests to point at a tempdir.
+	mdmPath func() string
 
-	steps := [][]string{
-		{"access", "set-default-account", creds.TeamAccountID},
-		{"access", "add-account-key", creds.ServiceTokenClient, creds.ServiceTokenSecret},
-		{"connect"},
-	}
-
-	for _, args := range steps {
-		// Always run with a short timeout per step (the CLI returns
-		// quickly on success; the slow path is the eventual `connect`
-		// poll, which is handled by PollEnrolled, not here).
-		stepCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		_, stderr, err := c.run(stepCtx, args...)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("%w: %s: %s", ErrWARPCLIFailed, redactArgs(args), strings.TrimSpace(stderr))
-		}
-	}
-	return nil
+	// runRestart shells out to `systemctl restart warp-svc` as a
+	// fallback when `warp-cli mdm refresh` fails. Overridable in
+	// tests so we don't actually poke systemd.
+	runRestart func(ctx context.Context) error
 }
 
 // IsEnrolled reports nil when warp-cli's status output contains the
@@ -218,23 +261,6 @@ func (c *cliClient) PollEnrolled(ctx context.Context, interval time.Duration) er
 	}
 }
 
-// assertBinaryAvailable runs `warp-cli --version` and translates the
-// "exec: not found" outcome to ErrWARPCLINotFound. Distinguishing
-// "binary missing" from "binary returns error" gives operators a clear
-// install-vs-troubleshoot signal.
-func (c *cliClient) assertBinaryAvailable(ctx context.Context) error {
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if _, err := exec.LookPath(c.binPath); err != nil {
-		return fmt.Errorf("%w: looked up %q on PATH (GOOS=%s)", ErrWARPCLINotFound, c.binPath, runtime.GOOS)
-	}
-	_, stderr, err := c.run(probeCtx, "--version")
-	if err != nil {
-		return fmt.Errorf("%w: probe --version: %s", ErrWARPCLIFailed, strings.TrimSpace(stderr))
-	}
-	return nil
-}
-
 // run executes warp-cli with the given args, returning stdout, stderr,
 // and any exec error. Sub-process exit code != 0 surfaces as an error;
 // stderr is preserved for logging by the caller.
@@ -254,17 +280,35 @@ func (c *cliClient) run(ctx context.Context, args ...string) (stdout, stderr str
 	return outBuf.String(), errBuf.String(), nil
 }
 
-// redactArgs returns a logging-safe form of a warp-cli argument list:
-// the Service-Token secret is replaced with "<redacted>" so failed-step
-// error messages don't leak the secret into operator logs or audit logs.
+// redactArgs returns a logging-safe form of a warp-cli argument list.
+// As of ADR-009 (MDM-file pivot) the headless Service-Token surface no
+// longer passes the secret as a CLI arg, so this function's primary
+// caller is gone. It is preserved for any future warp-cli interactions
+// that might carry sensitive argv (defense in depth).
 func redactArgs(args []string) string {
 	out := make([]string, len(args))
 	copy(out, args)
-	// add-account-key takes (<client_id>, <client_secret>); redact the
-	// secret (position 3 in the full args list when the first two are
-	// "access", "add-account-key").
+	// Legacy: `access add-account-key <client_id> <client_secret>` is no
+	// longer reachable but we keep the redaction in place in case the
+	// CLI grows another secret-bearing subcommand we shell out to.
 	if len(out) >= 4 && out[0] == "access" && out[1] == "add-account-key" {
 		out[3] = "<redacted>"
 	}
 	return strings.Join(out, " ")
+}
+
+// defaultRunSystemctlRestart is the production fallback when
+// `warp-cli mdm refresh` fails. It shells out to `systemctl restart
+// warp-svc` with a small timeout. Overridable in tests via the
+// cliClient.runRestart field.
+func defaultRunSystemctlRestart(ctx context.Context) error {
+	restartCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(restartCtx, "systemctl", "restart", "warp-svc") //nolint:gosec // fixed argv
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("systemctl restart warp-svc: %w: %s", err, strings.TrimSpace(errBuf.String()))
+	}
+	return nil
 }

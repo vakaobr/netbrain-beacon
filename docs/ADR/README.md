@@ -17,6 +17,9 @@ joint numbering, and vice versa.
 | [ADR-004](ADR-004-cross-language-byte-exactness-fixtures.md) | Cross-language byte-exactness fixtures | ADR-080 |
 | [ADR-005](ADR-005-ssrf-safe-dial-package.md) | SSRF safe-dial package | ADR-081 |
 | [ADR-006](ADR-006-collector-goroutine-model.md) | Collector goroutine model | ADR-082 |
+| [ADR-007](ADR-007-bundle-v2-warp-envelope.md) | Bundle v2 + WARP envelope | ADR-087 |
+| [ADR-008](ADR-008-warp-cli-subprocess-wrapper.md) | WARP CLI sub-process wrapper (erratum: superseded by ADR-009 for the argv contract) | ADR-088 |
+| [ADR-009](ADR-009-mdm-file-headless-warp-enrollment.md) | MDM-file headless WARP enrollment (Linux) | ADR-091 (pending) |
 
 ## Writing a new ADR
 

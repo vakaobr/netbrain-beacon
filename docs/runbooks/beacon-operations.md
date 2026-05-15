@@ -11,31 +11,67 @@ with `ErrBundleVersionUnsupported`. Bundle v2 may carry an encrypted
 WARP enrollment credential when the platform's Cloudflare mesh
 integration is active (ADR-007 pairs with netbrain ADR-087).
 
-When the bundle carries WARP credentials, `enroll` will:
+### OS support matrix (v0.2.0-rc.2)
+
+| Platform | Headless mesh enrollment | Operator path |
+|----------|--------------------------|---------------|
+| **Linux** (amd64 / arm64) | ✅ supported — beacon writes `/var/lib/cloudflare-warp/mdm.xml` and restarts `warp-svc` | `netbrain-beacon enroll --bundle-file ...` (must run as root) |
+| **macOS** | ❌ not implemented in this release (deferred to v0.3.0) | Run `warp-cli registration new <team-slug>` interactively first, then `netbrain-beacon enroll ... --skip-mesh` |
+| **Windows** | ❌ not implemented in this release (deferred to v0.3.0) | Same as macOS: interactive `warp-cli registration new` + `--skip-mesh` |
+
+`ErrMeshUnsupportedOS` is returned by the beacon on macOS / Windows
+when a mesh-enabled bundle is supplied without `--skip-mesh`.
+
+### What `enroll` does on Linux when the bundle carries WARP credentials
 
 1. Argon2id-derive a per-bundle KEK from the bootstrap token + envelope
    salt (1-3 s on commodity hardware).
 2. AES-256-GCM-decrypt the WARP credential envelope.
-3. Shell out to `warp-cli` to attach the host to the platform's WARP
-   team (`access set-default-account`, `access add-account-key`,
-   `connect`).
-4. Poll `warp-cli status` until the daemon is connected (deadline:
-   `--warp-poll-seconds`, default 60).
-5. Continue with the HTTP `/enroll` round-trip over the mesh overlay.
+3. Render `/var/lib/cloudflare-warp/mdm.xml` with `<organization>` (team
+   slug, derived from `warp_team_domain` by stripping the
+   `.cloudflareaccess.com` suffix), `<auth_client_id>` (service-token
+   client_id with `.access` suffix), `<auth_client_secret>` (the
+   decrypted secret), plus `<service_mode>warp</service_mode>`,
+   `<auto_connect>1</auto_connect>`, `<onboarding>false</onboarding>`.
+4. Write atomically (temp file + rename) at mode **0600**, owner root.
+5. Attempt `warp-cli mdm refresh` to make the daemon re-read the file
+   without a restart. Available on `warp-cli >= 2026.4.1350.0`.
+6. If `mdm refresh` is unsupported (older WARP CLI) or returns an
+   error, fall back to `systemctl restart warp-svc`.
+7. Poll `warp-cli status` until the daemon is connected (deadline:
+   `--warp-poll-seconds`, default 60). The MDM file's `auto_connect=1`
+   triggers the WARP client to connect on its own — no explicit
+   `warp-cli connect` is invoked.
+8. Continue with the HTTP `/enroll` round-trip over the mesh overlay.
+
+### On-disk-secret invariant (Linux)
+
+The service-token client_secret is written to
+`/var/lib/cloudflare-warp/mdm.xml` and persists between runs. The
+beacon enforces mode 0600 on the file (root-only). This is a
+**deliberate posture change** from v0.2.0-rc.1, where the secret only
+lived in memory during the subprocess call — see ADR-009 (paired with
+netbrain ADR-091) for the rationale. Operators on low-trust hosts must
+add full-disk encryption (see § "Hardening guidance for low-trust hosts"
+below); root on the host can read the secret either way.
 
 ### `warp-cli` is a runtime prerequisite
 
 The beacon binary does NOT bundle Cloudflare's WARP distribution.
 Install it before running `enroll` on a customer host that needs
-mesh-routed ingress:
+mesh-routed ingress. **Minimum WARP CLI version: `2026.1.150.0`**
+(`warp-cli mdm refresh` is preferred and needs `>= 2026.4.1350.0`; on
+older CLI the beacon falls back to `systemctl restart warp-svc`).
 
 - **Linux (Debian/Ubuntu)**: <https://pkg.cloudflareclient.com/> — adds
   the Cloudflare apt repo + installs `cloudflare-warp`. Verify with
   `warp-cli --version`.
 - **Linux (RHEL/Fedora)**: same repo, yum / dnf install.
-- **macOS**: download the .pkg from <https://1.1.1.1>.
+- **macOS**: download the .pkg from <https://1.1.1.1>. (Mesh path NOT
+  supported headlessly by the beacon — see OS matrix.)
 - **Windows**: MSI from <https://1.1.1.1>; `warp-cli.exe` lands in
-  `C:\Program Files\Cloudflare\Cloudflare WARP\`.
+  `C:\Program Files\Cloudflare\Cloudflare WARP\`. (Mesh path NOT
+  supported headlessly by the beacon — see OS matrix.)
 
 If `warp-cli` is missing the beacon exits with `ErrWARPCLINotFound`.
 
@@ -45,10 +81,34 @@ If `warp-cli` is missing the beacon exits with `ErrWARPCLINotFound`.
 --skip-mesh                  bypass WARP enrollment even when the bundle
                              carries credentials (use when the platform
                              is reachable without the mesh, e.g. LAN-only
-                             deployments)
+                             deployments — and the ONLY mode for macOS /
+                             Windows hosts in this release)
 --warp-cli <path>            override the warp-cli binary path
 --warp-poll-seconds <int>    deadline for reaching the WARP "connected"
                              state (default: 60)
+```
+
+### macOS / Windows operator path (manual)
+
+On macOS / Windows the beacon cannot perform headless service-token
+enrollment in this release. Run the WARP CLI interactively first, then
+pass `--skip-mesh` to the beacon:
+
+```bash
+# 1) Enroll the host into the Cloudflare team interactively
+#    (opens a browser callback URL for One-time PIN).
+warp-cli registration new <team-slug>
+warp-cli connect
+
+# 2) Confirm WARP is connected.
+warp-cli status     # → "Status update: Connected"
+
+# 3) Run the beacon enroll WITHOUT the mesh attach.
+netbrain-beacon enroll \
+  --bundle-file /path/to/bundle.b64 \
+  --server-url https://<platform-host>:8443 \
+  --state-dir <state-dir> \
+  --skip-mesh
 ```
 
 ### Troubleshooting
@@ -56,7 +116,9 @@ If `warp-cli` is missing the beacon exits with `ErrWARPCLINotFound`.
 | Error                          | Cause + fix |
 |--------------------------------|-------------|
 | `ErrBundleVersionUnsupported`  | Bundle is v1; platform must be re-generated as v2. Operator should request a fresh enrollment token from the NetBrain admin UI. |
+| `ErrMeshUnsupportedOS`         | Host is macOS or Windows. This beacon release implements headless mesh enrollment only on Linux. Run `warp-cli registration new <team-slug>` interactively, then re-invoke the beacon with `--skip-mesh`. |
 | `ErrWARPCLINotFound`           | `warp-cli` not on `PATH` or at `--warp-cli` path. Install Cloudflare WARP per the section above. |
+| MDM file written but daemon doesn't connect | `warp-cli mdm refresh` exists but the daemon ignored it. Try `systemctl restart warp-svc` by hand and re-check `warp-cli status`. If the daemon is healthy but the team rejects, verify the service token hasn't been rotated. |
 | `warp-cli status` timeout      | `--warp-poll-seconds` exceeded without reaching "connected". Check `warp-cli status` manually; verify customer firewall allows outbound to Cloudflare on UDP/443 + UDP/2408. |
 | Argon2id decrypt failure       | Bootstrap token mismatch (bundle was regenerated, operator used stale value). Request a fresh bundle. |
 | Mesh enrollment succeeds, HTTP `/enroll` 502 / connection refused | Platform host's WARP enrollment isn't active OR `CLOUDFLARE_PLATFORM_HOSTNAME` Magic DNS isn't resolving inside the mesh. Coordinate with platform operator — see netbrain `docs/runbooks/beacon-operations.md` § "Activating the Cloudflare WARP mesh path". |
